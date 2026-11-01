@@ -1,0 +1,360 @@
+/*
+ * Reusable C++ parity capture support for rd0lx.
+ *
+ * This code is only active when RD0LX_PARITY is set. It must not alter normal
+ * example behavior outside parity mode.
+ */
+#pragma once
+
+#include "VulkanDevice.h"
+
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace rd0lx
+{
+
+class JsonWriter
+{
+public:
+	explicit JsonWriter(const std::string& filename, int version = 2)
+		: out(filename, std::ios::out | std::ios::trunc)
+	{
+		out << "{";
+		first.push_back(true);
+		key("version").value(version);
+	}
+
+	~JsonWriter()
+	{
+		close();
+	}
+
+	JsonWriter& key(const std::string& value)
+	{
+		pendingKey = value;
+		hasPendingKey = true;
+		return *this;
+	}
+
+	JsonWriter& beginObject()
+	{
+		prefix();
+		out << "{";
+		first.push_back(true);
+		return *this;
+	}
+
+	JsonWriter& endObject()
+	{
+		first.pop_back();
+		out << "\n" << indent() << "}";
+		return *this;
+	}
+
+	JsonWriter& value(bool value)
+	{
+		prefix();
+		out << (value ? "true" : "false");
+		return *this;
+	}
+
+	JsonWriter& value(int value)
+	{
+		prefix();
+		out << value;
+		return *this;
+	}
+
+	JsonWriter& value(unsigned int value)
+	{
+		prefix();
+		out << value;
+		return *this;
+	}
+
+	JsonWriter& value(float value)
+	{
+		prefix();
+		out << std::setprecision(9) << value;
+		return *this;
+	}
+
+	JsonWriter& value(const std::string& value)
+	{
+		prefix();
+		out << quote(value);
+		return *this;
+	}
+
+	JsonWriter& value(const char* value)
+	{
+		return this->value(std::string(value));
+	}
+
+	JsonWriter& array(const float* values, size_t count)
+	{
+		prefix();
+		out << "[";
+		for (size_t i = 0; i < count; i++)
+		{
+			if (i) out << ",";
+			out << std::setprecision(9) << values[i];
+		}
+		out << "]";
+		return *this;
+	}
+
+	void close()
+	{
+		if (closed) return;
+		out << "\n}\n";
+		out.flush();
+		closed = true;
+	}
+
+private:
+	std::ofstream out;
+	std::vector<bool> first;
+	std::string pendingKey;
+	bool hasPendingKey = false;
+	bool closed = false;
+
+	std::string indent() const
+	{
+		return std::string(first.size() * 2, ' ');
+	}
+
+	void prefix()
+	{
+		if (first.empty()) return;
+		if (!first.back()) out << ",";
+		out << "\n" << indent();
+		first.back() = false;
+		if (hasPendingKey)
+		{
+			out << quote(pendingKey) << ": ";
+			hasPendingKey = false;
+		}
+	}
+
+	static std::string quote(const std::string& value)
+	{
+		std::string out = "\"";
+		for (auto c : value)
+		{
+			switch (c)
+			{
+				case '"': out += "\\\""; break;
+				case '\\': out += "\\\\"; break;
+				case '\n': out += "\\n"; break;
+				case '\r': out += "\\r"; break;
+				case '\t': out += "\\t"; break;
+				default: out += c; break;
+			}
+		}
+		out += "\"";
+		return out;
+	}
+};
+
+struct Parity
+{
+	bool enabled = false;
+	std::string dir = ".";
+	int frame = 0;
+	int captureFrame = 24;
+	int finishFrame = 25;
+	float time = 0.0f;
+
+	static Parity fromEnvironment()
+	{
+		Parity parity;
+		auto value = std::getenv("RD0LX_PARITY");
+		parity.enabled = value != nullptr
+			&& std::string(value) != ""
+			&& std::string(value) != "0";
+		if (!parity.enabled) return parity;
+
+		auto dir = std::getenv("RD0LX_PARITY_DIR");
+		parity.dir = dir != nullptr ? dir : ".";
+		if (!parity.dir.empty() && parity.dir.back() != '/')
+		{
+			parity.dir += '/';
+		}
+		parity.captureFrame = envInt("RD0LX_PARITY_FRAME", parity.captureFrame);
+		parity.finishFrame = envInt(
+			"RD0LX_PARITY_FINISH_FRAME", parity.captureFrame + 1
+		);
+		auto time = std::getenv("RD0LX_PARITY_TIME");
+		parity.time = time != nullptr ? std::stof(time) : 0.0f;
+		return parity;
+	}
+
+	std::string path(const std::string& file) const
+	{
+		return dir + file;
+	}
+
+	template <typename Camera, typename Vec3>
+	static void pinCamera(Camera& camera, const Vec3& position, const Vec3& rotation)
+	{
+		camera.setPosition(position);
+		camera.setRotation(rotation);
+	}
+
+	static void saveSwapchain(
+		vks::VulkanDevice* device, VkQueue queue,
+		VkImage image, VkFormat format,
+		uint32_t width, uint32_t height, const std::string& filename
+	)
+	{
+		saveImage(
+			device, queue, image, format, width, height,
+			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_ASPECT_COLOR_BIT,
+			0, 0, filename
+		);
+	}
+
+	static void saveImage(
+		vks::VulkanDevice* device, VkQueue queue,
+		VkImage image, VkFormat format,
+		uint32_t width, uint32_t height,
+		VkImageLayout sourceLayout, VkImageAspectFlags aspect,
+		uint32_t layer, uint32_t mip, const std::string& filename
+	)
+	{
+		const uint32_t bytesPerPixel = formatBytesPerPixel(format);
+		const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * bytesPerPixel;
+		vks::Buffer buffer{};
+		VK_CHECK_RESULT(device->createBuffer(
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			&buffer, size
+		));
+		VK_CHECK_RESULT(buffer.map());
+
+		VkCommandBuffer cmd = device->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+		VkImageSubresourceRange range{};
+		range.aspectMask = aspect;
+		range.baseMipLevel = mip;
+		range.levelCount = 1;
+		range.baseArrayLayer = layer;
+		range.layerCount = 1;
+
+		vks::tools::insertImageMemoryBarrier(
+			cmd, image,
+			VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+			sourceLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			range
+		);
+
+		VkBufferImageCopy region{};
+		region.bufferOffset = 0;
+		region.bufferRowLength = 0;
+		region.bufferImageHeight = 0;
+		region.imageSubresource.aspectMask = aspect;
+		region.imageSubresource.mipLevel = mip;
+		region.imageSubresource.baseArrayLayer = layer;
+		region.imageSubresource.layerCount = 1;
+		region.imageOffset = { 0, 0, 0 };
+		region.imageExtent = { width, height, 1 };
+		vkCmdCopyImageToBuffer(
+			cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer.buffer, 1, &region
+		);
+
+		vks::tools::insertImageMemoryBarrier(
+			cmd, image,
+			VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sourceLayout,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+			range
+		);
+
+		device->flushCommandBuffer(cmd, queue);
+
+		auto* data = static_cast<uint8_t*>(buffer.mapped);
+		std::ofstream file(filename, std::ios::out | std::ios::binary);
+		if (is8BitColor(format))
+		{
+			file << "P6\n" << width << "\n" << height << "\n255\n";
+			bool swizzle = isBgra8(format);
+			for (uint32_t y = 0; y < height; y++)
+			{
+				for (uint32_t x = 0; x < width; x++)
+				{
+					auto* pixel = data + (static_cast<size_t>(y) * width + x) * bytesPerPixel;
+					if (swizzle)
+					{
+						file.write(reinterpret_cast<const char*>(pixel + 2), 1);
+						file.write(reinterpret_cast<const char*>(pixel + 1), 1);
+						file.write(reinterpret_cast<const char*>(pixel), 1);
+					}
+					else
+					{
+						file.write(reinterpret_cast<const char*>(pixel), 3);
+					}
+				}
+			}
+		}
+		else
+		{
+			file.write(reinterpret_cast<const char*>(data), size);
+		}
+		file.close();
+
+		buffer.unmap();
+		buffer.destroy();
+		std::cout << "Parity capture saved: " << filename << std::endl;
+	}
+
+private:
+	static int envInt(const char* name, int fallback)
+	{
+		auto value = std::getenv(name);
+		return value != nullptr ? std::atoi(value) : fallback;
+	}
+
+	static bool isBgra8(VkFormat format)
+	{
+		return format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B8G8R8A8_SRGB;
+	}
+
+	static bool is8BitColor(VkFormat format)
+	{
+		return format == VK_FORMAT_R8G8B8A8_UNORM
+			|| format == VK_FORMAT_R8G8B8A8_SRGB
+			|| format == VK_FORMAT_B8G8R8A8_UNORM
+			|| format == VK_FORMAT_B8G8R8A8_SRGB;
+	}
+
+	static uint32_t formatBytesPerPixel(VkFormat format)
+	{
+		switch (format)
+		{
+			case VK_FORMAT_R8G8B8A8_UNORM:
+			case VK_FORMAT_R8G8B8A8_SRGB:
+			case VK_FORMAT_B8G8R8A8_UNORM:
+			case VK_FORMAT_B8G8R8A8_SRGB:
+			case VK_FORMAT_R32_SFLOAT:
+			case VK_FORMAT_D32_SFLOAT:
+				return 4;
+			case VK_FORMAT_R16G16B16A16_SFLOAT:
+				return 8;
+			case VK_FORMAT_R32G32B32A32_SFLOAT:
+				return 16;
+			case VK_FORMAT_D16_UNORM:
+				return 2;
+			default:
+				throw std::runtime_error("Unsupported parity capture format");
+		}
+	}
+};
+
+} // namespace rd0lx

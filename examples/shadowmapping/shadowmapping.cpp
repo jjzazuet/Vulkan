@@ -8,10 +8,9 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "rd0lx_parity.h"
 
-#include <algorithm>
 #include <cstdlib>
-#include <fstream>
 #include <vector>
 
 class VulkanExample : public VulkanExampleBase
@@ -20,9 +19,7 @@ public:
 	bool displayShadowMap = false;
 	bool filterPCF = true;
 
-	bool parityMode = false;
-	int parityFrame = 0;
-	std::string parityDir;
+	rd0lx::Parity parity;
 
 	// Keep depth range as small as possible
 	// for better shadow map precision
@@ -114,14 +111,8 @@ public:
 		camera.setPerspective(60.0f, (float)width / (float)height, 1.0f, 256.0f);
 		timerSpeed *= 0.5f;
 
-		auto parity = std::getenv("RD0LX_PARITY");
-		parityMode = parity != nullptr && std::string(parity) != "" && std::string(parity) != "0";
-		if (parityMode) {
-			auto dir = std::getenv("RD0LX_PARITY_DIR");
-			parityDir = dir != nullptr ? dir : ".";
-			if (!parityDir.empty() && parityDir.back() != '/') {
-				parityDir += '/';
-			}
+		parity = rd0lx::Parity::fromEnvironment();
+		if (parity.enabled) {
 			settings.overlay = false;
 			sceneIndex = 0;
 			filterPCF = true;
@@ -465,259 +456,71 @@ public:
 		memcpy(uniformBuffers[currentBuffer].offscreen.mapped, &uniformDataOffscreen, sizeof(UniformDataOffscreen));
 	}
 
-	static void writeMat4(std::ofstream &out, const glm::mat4 &m)
-	{
-		out << "[";
-		for (int c = 0; c < 4; c++) {
-			for (int r = 0; r < 4; r++) {
-				if (c || r) out << ",";
-				out << m[c][r];
-			}
-		}
-		out << "]";
-	}
-
-	static void writeVec3(std::ofstream &out, const glm::vec3 &v)
-	{
-		out << "[" << v.x << "," << v.y << "," << v.z << "]";
-	}
-
-	static void writeVec4(std::ofstream &out, const glm::vec4 &v)
-	{
-		out << "[" << v.x << "," << v.y << "," << v.z << "," << v.w << "]";
-	}
-
-	static std::string jsonString(const std::string &value)
-	{
-		std::string out = "\"";
-		for (auto c : value) {
-			if (c == '"' || c == '\\') {
-				out += '\\';
-			}
-			out += c;
-		}
-		out += "\"";
-		return out;
-	}
-
-	void saveScreenshot(const std::string &filename)
-	{
-		bool supportsBlit = true;
-		VkFormatProperties formatProps;
-
-		vkGetPhysicalDeviceFormatProperties(physicalDevice, swapChain.colorFormat, &formatProps);
-		if (!(formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
-			supportsBlit = false;
-		}
-		vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_R8G8B8A8_UNORM, &formatProps);
-		if (!(formatProps.linearTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
-			supportsBlit = false;
-		}
-
-		VkImage srcImage = swapChain.images[currentImageIndex];
-
-		VkImageCreateInfo imageCreateCI(vks::initializers::imageCreateInfo());
-		imageCreateCI.imageType = VK_IMAGE_TYPE_2D;
-		imageCreateCI.format = VK_FORMAT_R8G8B8A8_UNORM;
-		imageCreateCI.extent.width = width;
-		imageCreateCI.extent.height = height;
-		imageCreateCI.extent.depth = 1;
-		imageCreateCI.arrayLayers = 1;
-		imageCreateCI.mipLevels = 1;
-		imageCreateCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		imageCreateCI.samples = VK_SAMPLE_COUNT_1_BIT;
-		imageCreateCI.tiling = VK_IMAGE_TILING_LINEAR;
-		imageCreateCI.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-
-		VkImage dstImage;
-		VK_CHECK_RESULT(vkCreateImage(device, &imageCreateCI, nullptr, &dstImage));
-
-		VkMemoryRequirements memRequirements;
-		vkGetImageMemoryRequirements(device, dstImage, &memRequirements);
-
-		VkMemoryAllocateInfo memAllocInfo(vks::initializers::memoryAllocateInfo());
-		memAllocInfo.allocationSize = memRequirements.size;
-		memAllocInfo.memoryTypeIndex = vulkanDevice->getMemoryType(
-			memRequirements.memoryTypeBits,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-		);
-
-		VkDeviceMemory dstImageMemory;
-		VK_CHECK_RESULT(vkAllocateMemory(device, &memAllocInfo, nullptr, &dstImageMemory));
-		VK_CHECK_RESULT(vkBindImageMemory(device, dstImage, dstImageMemory, 0));
-
-		VkCommandBuffer copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-
-		vks::tools::insertImageMemoryBarrier(
-			copyCmd, dstImage,
-			0, VK_ACCESS_TRANSFER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-		);
-		vks::tools::insertImageMemoryBarrier(
-			copyCmd, srcImage,
-			VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-		);
-
-		if (supportsBlit) {
-			VkOffset3D blitSize;
-			blitSize.x = width;
-			blitSize.y = height;
-			blitSize.z = 1;
-			VkImageBlit imageBlitRegion{};
-			imageBlitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			imageBlitRegion.srcSubresource.layerCount = 1;
-			imageBlitRegion.srcOffsets[1] = blitSize;
-			imageBlitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			imageBlitRegion.dstSubresource.layerCount = 1;
-			imageBlitRegion.dstOffsets[1] = blitSize;
-			vkCmdBlitImage(
-				copyCmd,
-				srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				1, &imageBlitRegion, VK_FILTER_NEAREST
-			);
-		} else {
-			VkImageCopy imageCopyRegion{};
-			imageCopyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			imageCopyRegion.srcSubresource.layerCount = 1;
-			imageCopyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			imageCopyRegion.dstSubresource.layerCount = 1;
-			imageCopyRegion.extent.width = width;
-			imageCopyRegion.extent.height = height;
-			imageCopyRegion.extent.depth = 1;
-			vkCmdCopyImage(
-				copyCmd,
-				srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				1, &imageCopyRegion
-			);
-		}
-
-		vks::tools::insertImageMemoryBarrier(
-			copyCmd, dstImage,
-			VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-		);
-		vks::tools::insertImageMemoryBarrier(
-			copyCmd, srcImage,
-			VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-		);
-
-		vulkanDevice->flushCommandBuffer(copyCmd, queue);
-
-		VkImageSubresource subResource{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 0 };
-		VkSubresourceLayout subResourceLayout;
-		vkGetImageSubresourceLayout(device, dstImage, &subResource, &subResourceLayout);
-
-		const char *data;
-		vkMapMemory(device, dstImageMemory, 0, VK_WHOLE_SIZE, 0, (void**) &data);
-		data += subResourceLayout.offset;
-
-		std::ofstream file(filename, std::ios::out | std::ios::binary);
-		file << "P6\n" << width << "\n" << height << "\n" << 255 << "\n";
-
-		bool colorSwizzle = false;
-		if (!supportsBlit) {
-			std::vector<VkFormat> formatsBGR = {
-				VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SNORM
-			};
-			colorSwizzle = std::find(formatsBGR.begin(), formatsBGR.end(), swapChain.colorFormat) != formatsBGR.end();
-		}
-
-		for (uint32_t y = 0; y < height; y++) {
-			unsigned int *row = (unsigned int*) data;
-			for (uint32_t x = 0; x < width; x++) {
-				if (colorSwizzle) {
-					file.write((char*) row + 2, 1);
-					file.write((char*) row + 1, 1);
-					file.write((char*) row, 1);
-				} else {
-					file.write((char*) row, 3);
-				}
-				row++;
-			}
-			data += subResourceLayout.rowPitch;
-		}
-		file.close();
-
-		vkUnmapMemory(device, dstImageMemory);
-		vkFreeMemory(device, dstImageMemory, nullptr);
-		vkDestroyImage(device, dstImage, nullptr);
-		std::cout << "Screenshot saved: " << filename << std::endl;
-	}
-
 	void dumpParityMetadata(const std::string &filename)
 	{
 		auto lightProjection = glm::perspective(glm::radians(lightFOV), 1.0f, zNear, zFar);
 		auto lightView = glm::lookAt(lightPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 		auto lightSpace = lightProjection * lightView;
 
-		std::ofstream out(filename);
-		out << "{\n";
-		out << "  \"frame\": 24,\n";
-		out << "  \"width\": " << width << ",\n";
-		out << "  \"height\": " << height << ",\n";
-		out << "  \"scene\": " << jsonString(sceneNames[sceneIndex]) << ",\n";
-		out << "  \"scenePath\": \"assets/models/vulkanscene_shadow.gltf\",\n";
-		out << "  \"shaderDir\": \"shaders/glsl/shadowmapping\",\n";
-		out << "  \"pcf\": " << (filterPCF ? "true" : "false") << ",\n";
-		out << "  \"displayShadowMap\": false,\n";
-		out << "  \"clearColor\": ["
-			<< defaultClearColor.float32[0] << ","
-			<< defaultClearColor.float32[1] << ","
-			<< defaultClearColor.float32[2] << ","
-			<< defaultClearColor.float32[3] << "],\n";
-		out << "  \"colorFormat\": " << swapChain.colorFormat << ",\n";
-		out << "  \"depthFormat\": " << depthFormat << ",\n";
-		out << "  \"shadowMapSize\": " << shadowMapize << ",\n";
-		out << "  \"shadowMapFormat\": " << offscreenDepthFormat << ",\n";
-		out << "  \"zNear\": " << zNear << ",\n";
-		out << "  \"zFar\": " << zFar << ",\n";
-		out << "  \"lightFov\": " << lightFOV << ",\n";
-		out << "  \"depthBias\": {\"constant\": " << depthBiasConstant
-			<< ", \"slope\": " << depthBiasSlope << "},\n";
-		out << "  \"camera\": {\n";
-		out << "    \"position\": "; writeVec3(out, camera.position); out << ",\n";
-		out << "    \"rotation\": "; writeVec3(out, camera.rotation); out << ",\n";
-		out << "    \"view\": "; writeMat4(out, camera.matrices.view); out << ",\n";
-		out << "    \"projection\": "; writeMat4(out, camera.matrices.perspective); out << "\n";
-		out << "  },\n";
-		out << "  \"light\": {\n";
-		out << "    \"position\": "; writeVec3(out, lightPos); out << ",\n";
-		out << "    \"view\": "; writeMat4(out, lightView); out << ",\n";
-		out << "    \"projection\": "; writeMat4(out, lightProjection); out << ",\n";
-		out << "    \"lightSpace\": "; writeMat4(out, lightSpace); out << "\n";
-		out << "  },\n";
-		out << "  \"uniforms\": {\n";
-		out << "    \"scene\": {\n";
-		out << "      \"projection\": "; writeMat4(out, uniformDataScene.projection); out << ",\n";
-		out << "      \"view\": "; writeMat4(out, uniformDataScene.view); out << ",\n";
-		out << "      \"model\": "; writeMat4(out, uniformDataScene.model); out << ",\n";
-		out << "      \"lightSpace\": "; writeMat4(out, uniformDataScene.depthBiasMVP); out << ",\n";
-		out << "      \"lightPos\": "; writeVec4(out, uniformDataScene.lightPos); out << ",\n";
-		out << "      \"zNear\": " << uniformDataScene.zNear << ",\n";
-		out << "      \"zFar\": " << uniformDataScene.zFar << "\n";
-		out << "    },\n";
-		out << "    \"offscreen\": {\"depthMVP\": "; writeMat4(out, uniformDataOffscreen.depthMVP); out << "}\n";
-		out << "  },\n";
-		out << "  \"device\": {\n";
-		out << "    \"name\": " << jsonString(vulkanDevice->properties.deviceName) << ",\n";
-		out << "    \"driverVersion\": " << vulkanDevice->properties.driverVersion << ",\n";
-		out << "    \"apiVersion\": " << vulkanDevice->properties.apiVersion << ",\n";
-		out << "    \"vendorID\": " << vulkanDevice->properties.vendorID << ",\n";
-		out << "    \"deviceID\": " << vulkanDevice->properties.deviceID << "\n";
-		out << "  }\n";
-		out << "}\n";
+		rd0lx::JsonWriter out(filename);
+		out.key("frame").value(24);
+		out.key("width").value(width);
+		out.key("height").value(height);
+		out.key("scene").value(sceneNames[sceneIndex]);
+		out.key("scenePath").value("assets/models/vulkanscene_shadow.gltf");
+		out.key("shaderDir").value("shaders/glsl/shadowmapping");
+		out.key("pcf").value(filterPCF);
+		out.key("displayShadowMap").value(false);
+		out.key("clearColor").array(defaultClearColor.float32, 4);
+		out.key("colorFormat").value(static_cast<uint32_t>(swapChain.colorFormat));
+		out.key("depthFormat").value(static_cast<uint32_t>(depthFormat));
+		out.key("shadowMapSize").value(shadowMapize);
+		out.key("shadowMapFormat").value(static_cast<uint32_t>(offscreenDepthFormat));
+		out.key("zNear").value(zNear);
+		out.key("zFar").value(zFar);
+		out.key("lightFov").value(lightFOV);
+		out.key("depthBias").beginObject();
+		out.key("constant").value(depthBiasConstant);
+		out.key("slope").value(depthBiasSlope);
+		out.endObject();
+
+		out.key("camera").beginObject();
+		out.key("position").array(&camera.position.x, 3);
+		out.key("rotation").array(&camera.rotation.x, 3);
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.endObject();
+
+		out.key("light").beginObject();
+		out.key("position").array(&lightPos.x, 3);
+		out.key("view").array(&lightView[0][0], 16);
+		out.key("projection").array(&lightProjection[0][0], 16);
+		out.key("lightSpace").array(&lightSpace[0][0], 16);
+		out.endObject();
+
+		out.key("uniforms").beginObject();
+		out.key("scene").beginObject();
+		out.key("projection").array(&uniformDataScene.projection[0][0], 16);
+		out.key("view").array(&uniformDataScene.view[0][0], 16);
+		out.key("model").array(&uniformDataScene.model[0][0], 16);
+		out.key("lightSpace").array(&uniformDataScene.depthBiasMVP[0][0], 16);
+		out.key("lightPos").array(&uniformDataScene.lightPos.x, 4);
+		out.key("zNear").value(uniformDataScene.zNear);
+		out.key("zFar").value(uniformDataScene.zFar);
+		out.endObject();
+		out.key("offscreen").beginObject();
+		out.key("depthMVP").array(&uniformDataOffscreen.depthMVP[0][0], 16);
+		out.endObject();
+		out.endObject();
+
+		out.key("device").beginObject();
+		out.key("name").value(vulkanDevice->properties.deviceName);
+		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+		out.key("vendorID").value(vulkanDevice->properties.vendorID);
+		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		out.endObject();
+		out.close();
 	}
 
 	void finishParity()
@@ -839,9 +642,13 @@ public:
 		if (!prepared)
 			return;
 
-		if (parityMode) {
-			timer = 0.0f;
-			displayShadowMap = parityFrame == 25;
+		if (parity.enabled) {
+			timer = parity.time;
+			rd0lx::Parity::pinCamera(
+				camera, glm::vec3(0.0f, 0.0f, -12.5f), glm::vec3(-25.0f, -390.0f, 0.0f)
+			);
+			camera.setPerspective(60.0f, (float)width / (float)height, 1.0f, 256.0f);
+			displayShadowMap = parity.frame == parity.finishFrame;
 		}
 
 		VulkanExampleBase::prepareFrame();
@@ -852,16 +659,22 @@ public:
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
 
-		if (parityMode) {
+		if (parity.enabled) {
 			vkDeviceWaitIdle(device);
-			if (parityFrame == 24) {
-				saveScreenshot(parityDir + "cpp_scene.ppm");
-			} else if (parityFrame == 25) {
-				saveScreenshot(parityDir + "cpp_shadow_map.ppm");
-				dumpParityMetadata(parityDir + "cpp.json");
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height, parity.path("cpp_scene.ppm")
+				);
+			} else if (parity.frame == parity.finishFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height, parity.path("cpp_shadow_map.ppm")
+				);
+				dumpParityMetadata(parity.path("cpp.json"));
 				finishParity();
 			}
-			parityFrame++;
+			parity.frame++;
 		}
 	}
 
