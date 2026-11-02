@@ -8,7 +8,7 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
-#include "rd0lx_parity.h"
+#include "ztgfx_parity.h"
 
 #include <cstdlib>
 #include <vector>
@@ -19,7 +19,7 @@ public:
 	bool displayShadowMap = false;
 	bool filterPCF = true;
 
-	rd0lx::Parity parity;
+	ztgfx::Parity parity;
 
 	// Keep depth range as small as possible
 	// for better shadow map precision
@@ -111,7 +111,7 @@ public:
 		camera.setPerspective(60.0f, (float)width / (float)height, 1.0f, 256.0f);
 		timerSpeed *= 0.5f;
 
-		parity = rd0lx::Parity::fromEnvironment();
+		parity = ztgfx::Parity::fromEnvironment();
 		if (parity.enabled) {
 			settings.overlay = false;
 			sceneIndex = 0;
@@ -462,7 +462,7 @@ public:
 		auto lightView = glm::lookAt(lightPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 		auto lightSpace = lightProjection * lightView;
 
-		rd0lx::JsonWriter out(filename);
+		ztgfx::JsonWriter out(filename);
 		out.key("frame").value(24);
 		out.key("width").value(width);
 		out.key("height").value(height);
@@ -644,7 +644,7 @@ public:
 
 		if (parity.enabled) {
 			timer = parity.time;
-			rd0lx::Parity::pinCamera(
+			ztgfx::Parity::pinCamera(
 				camera, glm::vec3(0.0f, 0.0f, -12.5f), glm::vec3(-25.0f, -390.0f, 0.0f)
 			);
 			camera.setPerspective(60.0f, (float)width / (float)height, 1.0f, 256.0f);

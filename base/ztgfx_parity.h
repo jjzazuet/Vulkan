@@ -1,7 +1,7 @@
 /*
- * Reusable C++ parity capture support for rd0lx.
+ * Reusable C++ parity capture support for zt-gfx.
  *
- * This code is only active when RD0LX_PARITY is set. It must not alter normal
+ * This code is only active when ZTGFX_PARITY is set. It must not alter normal
  * example behavior outside parity mode.
  */
 #pragma once
@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace rd0lx
+namespace ztgfx
 {
 
 class JsonWriter
@@ -175,23 +175,23 @@ struct Parity
 	static Parity fromEnvironment()
 	{
 		Parity parity;
-		auto value = std::getenv("RD0LX_PARITY");
+		auto value = std::getenv("ZTGFX_PARITY");
 		parity.enabled = value != nullptr
 			&& std::string(value) != ""
 			&& std::string(value) != "0";
 		if (!parity.enabled) return parity;
 
-		auto dir = std::getenv("RD0LX_PARITY_DIR");
+		auto dir = std::getenv("ZTGFX_PARITY_DIR");
 		parity.dir = dir != nullptr ? dir : ".";
 		if (!parity.dir.empty() && parity.dir.back() != '/')
 		{
 			parity.dir += '/';
 		}
-		parity.captureFrame = envInt("RD0LX_PARITY_FRAME", parity.captureFrame);
+		parity.captureFrame = envInt("ZTGFX_PARITY_FRAME", parity.captureFrame);
 		parity.finishFrame = envInt(
-			"RD0LX_PARITY_FINISH_FRAME", parity.captureFrame + 1
+			"ZTGFX_PARITY_FINISH_FRAME", parity.captureFrame + 1
 		);
-		auto time = std::getenv("RD0LX_PARITY_TIME");
+		auto time = std::getenv("ZTGFX_PARITY_TIME");
 		parity.time = time != nullptr ? std::stof(time) : 0.0f;
 		return parity;
 	}
@@ -357,4 +357,4 @@ private:
 	}
 };
 
-} // namespace rd0lx
+} // namespace ztgfx
