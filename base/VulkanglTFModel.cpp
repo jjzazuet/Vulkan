@@ -19,6 +19,9 @@
 
 #include "VulkanglTFModel.h"
 
+#include <cstdlib>
+#include <fstream>
+
 VkDescriptorSetLayout vkglTF::descriptorSetLayoutImage = VK_NULL_HANDLE;
 VkDescriptorSetLayout vkglTF::descriptorSetLayoutUbo = VK_NULL_HANDLE;
 VkMemoryPropertyFlags vkglTF::memoryPropertyFlags = 0;
@@ -1175,6 +1178,133 @@ void vkglTF::Model::loadAnimations(tinygltf::Model &gltfModel)
 	}
 }
 
+
+/*
+	Parity-only dump of the post-PreTransformVertices | FlipY vertex and index
+	buffers. Enabled with ZTGFX_VERTEX_DUMP=<output-directory>; normal example
+	behavior is unchanged. The emitted .vertices.bin stores
+	position(3), normal(3), uv(2) floats per vertex; .indices.bin stores uint32
+	indices; .json records primitive ranges and material/image mapping.
+*/
+static void dumpParityVertexBuffers(
+	const std::string& filename,
+	const std::vector<vkglTF::Vertex>& vertexBuffer,
+	const std::vector<uint32_t>& indexBuffer,
+	const tinygltf::Model& gltfModel,
+	const std::vector<vkglTF::Node*>& linearNodes,
+	const std::vector<vkglTF::Material>& materials)
+{
+	const char* prefix = std::getenv("ZTGFX_VERTEX_DUMP");
+	if (!prefix || !*prefix) {
+		return;
+	}
+	std::string name = filename;
+	size_t slash = name.find_last_of('/');
+	if (slash != std::string::npos) {
+		name = name.substr(slash + 1);
+	}
+	size_t dot = name.find_last_of('.');
+	if (dot != std::string::npos) {
+		name = name.substr(0, dot);
+	}
+	const std::string base = std::string(prefix) + "/" + name;
+
+	{
+		std::ofstream out(base + ".vertices.bin", std::ios::binary);
+		for (const auto& v : vertexBuffer) {
+			float data[8] = {
+				v.pos.x, v.pos.y, v.pos.z,
+				v.normal.x, v.normal.y, v.normal.z,
+				v.uv.x, v.uv.y
+			};
+			out.write(reinterpret_cast<const char*>(data), sizeof(data));
+		}
+	}
+	{
+		std::ofstream out(base + ".indices.bin", std::ios::binary);
+		if (!indexBuffer.empty()) {
+			out.write(
+				reinterpret_cast<const char*>(indexBuffer.data()),
+				static_cast<std::streamsize>(indexBuffer.size() * sizeof(uint32_t))
+			);
+		}
+	}
+
+	std::ofstream out(base + ".json");
+	out << "{\n";
+	out << "  \"source\": \"" << filename << "\",\n";
+	out << "  \"vertexCount\": " << vertexBuffer.size() << ",\n";
+	out << "  \"indexCount\": " << indexBuffer.size() << ",\n";
+	out << "  \"vertexStride\": 32,\n";
+	out << "  \"vertexAttributes\": [\n"
+	    << "    {\"name\": \"POSITION\", \"components\": 3},\n"
+	    << "    {\"name\": \"NORMAL\", \"components\": 3},\n"
+	    << "    {\"name\": \"TEXCOORD_0\", \"components\": 2}\n"
+	    << "  ],\n";
+
+	out << "  \"images\": [\n";
+	for (size_t i = 0; i < gltfModel.images.size(); i++) {
+		const auto& image = gltfModel.images[i];
+		out << "    {\"index\": " << i
+		    << ", \"name\": \"" << image.name
+		    << "\", \"uri\": \"" << image.uri
+		    << "\", \"mimeType\": \"" << image.mimeType
+		    << "\", \"bufferView\": " << image.bufferView
+		    << ", \"width\": " << image.width
+		    << ", \"height\": " << image.height << "}";
+		if (i + 1 < gltfModel.images.size()) {
+			out << ",";
+		}
+		out << "\n";
+	}
+	out << "  ],\n";
+
+	out << "  \"primitives\": [\n";
+	bool first = true;
+	for (const auto* node : linearNodes) {
+		if (!node || !node->mesh) {
+			continue;
+		}
+		for (const auto* primitive : node->mesh->primitives) {
+			int32_t materialIndex = -1;
+			for (size_t m = 0; m < materials.size(); m++) {
+				if (&materials[m] == &primitive->material) {
+					materialIndex = static_cast<int32_t>(m);
+					break;
+				}
+			}
+			const auto& material = primitive->material;
+			int64_t imageIndex = -1;
+			if (material.baseColorTexture) {
+				imageIndex = static_cast<int64_t>(material.baseColorTexture->index);
+			}
+			if (!first) {
+				out << ",\n";
+			}
+			first = false;
+			out << "    {\"nodeIndex\": " << node->index
+			    << ", \"nodeName\": \"" << node->name
+			    << "\", \"meshName\": \"" << node->mesh->name
+			    << "\", \"firstIndex\": " << primitive->firstIndex
+			    << ", \"indexCount\": " << primitive->indexCount
+			    << ", \"firstVertex\": " << primitive->firstVertex
+			    << ", \"vertexCount\": " << primitive->vertexCount
+			    << ", \"materialIndex\": " << materialIndex
+			    << ", \"imageIndex\": " << imageIndex
+			    << ", \"alphaMode\": " << static_cast<int>(material.alphaMode)
+			    << ", \"alphaCutoff\": " << material.alphaCutoff
+			    << ", \"baseColorFactor\": ["
+			    << material.baseColorFactor.x << ", "
+			    << material.baseColorFactor.y << ", "
+			    << material.baseColorFactor.z << ", "
+			    << material.baseColorFactor.w << "]}";
+		}
+	}
+	out << "\n  ]\n";
+	out << "}\n";
+	out.close();
+}
+
 void vkglTF::Model::loadFromFile(std::string filename, vks::VulkanDevice *device, VkQueue transferQueue, uint32_t fileLoadingFlags, float scale)
 {
 	tinygltf::Model gltfModel;
@@ -1267,6 +1397,10 @@ void vkglTF::Model::loadFromFile(std::string filename, vks::VulkanDevice *device
 			}
 		}
 	}
+
+	dumpParityVertexBuffers(
+		filename, vertexBuffer, indexBuffer, gltfModel, linearNodes, materials
+	);
 
 	for (auto& extension : gltfModel.extensionsUsed) {
 		if (extension == "KHR_materials_pbrSpecularGlossiness") {
