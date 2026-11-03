@@ -11,6 +11,7 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
 #include <ktx.h>
 #include <ktxvulkan.h>
 
@@ -19,7 +20,10 @@ class VulkanExample : public VulkanExampleBase
 public:
 	bool displaySkybox = true;
 
+	ztgfx::Parity parity;
+
 	vks::Texture cubeMapArray;
+	VkFormat cubeMapFormat{ VK_FORMAT_R8G8B8A8_UNORM };
 
 	struct Meshes {
 		vkglTF::Model skybox;
@@ -55,6 +59,13 @@ public:
 		camera.setPosition(glm::vec3(0.0f, 0.0f, -4.0f));
 		camera.setRotationSpeed(0.25f);
 		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 256.0f);
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+			displaySkybox = true;
+			uniformData.cubeMapIndex = 1;
+		}
 	}
 
 	~VulkanExample()
@@ -162,6 +173,9 @@ public:
 		imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		imageCreateInfo.extent = { cubeMapArray.width, cubeMapArray.height, 1 };
 		imageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		if (parity.enabled) {
+			imageCreateInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		}
 		// Cube faces count as array layers in Vulkan
 		imageCreateInfo.arrayLayers = 6 * cubeMapArray.layerCount;
 		// This flag is required for cube map images
@@ -460,14 +474,102 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
+	void captureParity()
+	{
+		const uint32_t element0 = 0;
+		const uint32_t element1 = 1;
+		const uint32_t element2 = 2;
+		const uint32_t face0 = 0;
+		const uint32_t face2 = 2;
+		const uint32_t face5 = 5;
+		const uint32_t mip0 = 0;
+		const uint32_t mip2 = 2;
+
+		parity.saveImage(
+			vulkanDevice, queue, cubeMapArray.image, cubeMapFormat,
+			cubeMapArray.width, cubeMapArray.height, cubeMapArray.imageLayout,
+			VK_IMAGE_ASPECT_COLOR_BIT,
+			element0 * 6 + face0, mip0,
+			parity.path("cpp_cubearray_e0_f0_m0.ppm"),
+			"cubeArrayElement0Face0Mip0", face0
+		);
+		parity.saveImage(
+			vulkanDevice, queue, cubeMapArray.image, cubeMapFormat,
+			cubeMapArray.width, cubeMapArray.height, cubeMapArray.imageLayout,
+			VK_IMAGE_ASPECT_COLOR_BIT,
+			element1 * 6 + face2, mip0,
+			parity.path("cpp_cubearray_e1_f2_m0.ppm"),
+			"cubeArrayElement1Face2Mip0", face2
+		);
+		parity.saveImage(
+			vulkanDevice, queue, cubeMapArray.image, cubeMapFormat,
+			cubeMapArray.width >> mip2, cubeMapArray.height >> mip2,
+			cubeMapArray.imageLayout, VK_IMAGE_ASPECT_COLOR_BIT,
+			element2 * 6 + face5, mip2,
+			parity.path("cpp_cubearray_e2_f5_m2.ppm"),
+			"cubeArrayElement2Face5Mip2", face5
+		);
+
+		ztgfx::JsonWriter out(parity.path("cpp.json"));
+		out.key("frame").value(parity.captureFrame);
+		out.key("width").value(width);
+		out.key("height").value(height);
+		out.key("camera").beginObject();
+		out.key("position").array(&camera.position.x, 3);
+		out.key("rotation").array(&camera.rotation.x, 3);
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.endObject();
+		out.key("light").beginObject();
+		out.endObject();
+		out.key("uniforms").beginObject();
+		out.endObject();
+		out.key("device").beginObject();
+		out.key("name").value(vulkanDevice->properties.deviceName);
+		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+		out.key("vendorID").value(vulkanDevice->properties.vendorID);
+		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		out.endObject();
+		out.close();
+		parity.writeCaptures(parity.path("captures.json"));
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared)
 			return;
+
+		if (parity.enabled) {
+			timer = parity.time;
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(0.0f, 0.0f, -4.0f), glm::vec3(0.0f, 0.0f, 0.0f)
+			);
+			camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 256.0f);
+		}
+
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				captureParity();
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
