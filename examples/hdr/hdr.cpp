@@ -13,12 +13,20 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
+
+#include <cstdlib>
 
 class VulkanExample : public VulkanExampleBase
 {
 public:
 	bool bloom = true;
 	bool displaySkybox = true;
+
+	ztgfx::Parity parity;
+	float cameraFov = 60.0f;
+	float cameraNear = 0.1f;
+	float cameraFar = 256.0f;
 
 	struct {
 		vks::TextureCubeMap envmap;
@@ -103,7 +111,16 @@ public:
 		camera.type = Camera::CameraType::lookat;
 		camera.setPosition(glm::vec3(0.0f, 0.0f, -6.0f));
 		camera.setRotation(glm::vec3(0.0f, 0.0f, 0.0f));
-		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 256.0f);
+		camera.setPerspective(cameraFov, (float)width / (float)height, cameraNear, cameraFar);
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+			bloom = true;
+			displaySkybox = true;
+			models.index = 1;
+			uniformData.exposure = 1.0f;
+		}
 	}
 
 	~VulkanExample()
@@ -170,6 +187,9 @@ public:
 		image.samples = VK_SAMPLE_COUNT_1_BIT;
 		image.tiling = VK_IMAGE_TILING_OPTIMAL;
 		image.usage = usage | VK_IMAGE_USAGE_SAMPLED_BIT;
+		if (parity.enabled) {
+			image.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		}
 
 		VkMemoryAllocateInfo memAlloc = vks::initializers::memoryAllocateInfo();
 		VkMemoryRequirements memReqs;
@@ -425,7 +445,14 @@ public:
 			models.objects[i].loadFromFile(getAssetPath() + "models/" + filenames[i], vulkanDevice, queue, glTFLoadingFlags);
 		}
 		// Load HDR cube map
-		textures.envmap.loadFromFile(getAssetPath() + "textures/hdr/uffizi_cube.ktx", VK_FORMAT_R16G16B16A16_SFLOAT, vulkanDevice, queue);
+		std::string envmap = getAssetPath() + "textures/hdr/uffizi_cube.ktx";
+		if (parity.enabled) {
+			auto parityEnvmap = std::getenv("ZTGFX_PARITY_ENVMAP");
+			if (parityEnvmap != nullptr && std::string(parityEnvmap) != "") {
+				envmap = parityEnvmap;
+			}
+		}
+		textures.envmap.loadFromFile(envmap, VK_FORMAT_R16G16B16A16_SFLOAT, vulkanDevice, queue);
 	}
 
 	void setupDescriptors()
@@ -794,14 +821,132 @@ public:
 	}
 
 
+	void dumpParityMetadata(std::string filename)
+	{
+		ztgfx::JsonWriter out(filename);
+		out.key("frame").value(parity.captureFrame);
+		out.key("width").value(width);
+		out.key("height").value(height);
+		out.key("time").value(parity.time);
+
+		out.key("camera").beginObject();
+		out.key("position").array(&camera.position.x, 3);
+		out.key("rotation").array(&camera.rotation.x, 3);
+		out.key("yfov").value(glm::radians(cameraFov));
+		out.key("aspect").value((float) width / (float) height);
+		out.key("near").value(cameraNear);
+		out.key("far").value(cameraFar);
+		out.key("flipY").value(camera.flipY);
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.endObject();
+
+		glm::vec3 lightPos(0.0f, -5.0f, 5.0f);
+		out.key("light").beginObject();
+		out.key("position").array(&lightPos.x, 3);
+		out.endObject();
+
+		out.key("uniforms").beginObject();
+		out.key("projection").array(&uniformData.projection[0][0], 16);
+		out.key("modelview").array(&uniformData.modelview[0][0], 16);
+		out.key("inverseModelview").array(&uniformData.inverseModelview[0][0], 16);
+		out.key("exposure").value(uniformData.exposure);
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value(static_cast<uint32_t>(swapChain.colorFormat));
+		out.key("offscreenColor").value(static_cast<uint32_t>(offscreen.color[0].format));
+		out.key("bloomFilter").value(static_cast<uint32_t>(filterPass.color[0].format));
+		out.key("depth").value(static_cast<uint32_t>(offscreen.depth.format));
+		out.endObject();
+
+		out.key("modelIndex").value(models.index);
+		out.key("bloom").value(bloom);
+		out.key("displaySkybox").value(displaySkybox);
+
+		out.key("specConstants").beginObject();
+		out.key("gbufferSkybox").value(0u);
+		out.key("gbufferReflect").value(1u);
+		out.key("bloomFilterDir").value(0u);
+		out.key("bloomCompositeDir").value(1u);
+		out.endObject();
+
+		out.key("device").beginObject();
+		out.key("name").value(vulkanDevice->properties.deviceName);
+		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+		out.key("vendorID").value(vulkanDevice->properties.vendorID);
+		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		out.endObject();
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared)
 			return;
+
+		if (parity.enabled) {
+			timer = parity.time;
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(0.0f, 0.0f, -6.0f), glm::vec3(0.0f, 0.0f, 0.0f)
+			);
+			camera.setPerspective(cameraFov, (float) width / (float) height, cameraNear, cameraFar);
+			bloom = true;
+			displaySkybox = true;
+			models.index = 1;
+			uniformData.exposure = 1.0f;
+		}
+
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				parity.saveImage(
+					vulkanDevice, queue, offscreen.color[0].image, offscreen.color[0].format,
+					offscreen.width, offscreen.height,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					VK_IMAGE_ASPECT_COLOR_BIT, 0, 0,
+					parity.path("cpp_offscreen_color0.raw"), "offscreenColor0"
+				);
+				parity.saveImage(
+					vulkanDevice, queue, offscreen.color[1].image, offscreen.color[1].format,
+					offscreen.width, offscreen.height,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					VK_IMAGE_ASPECT_COLOR_BIT, 0, 0,
+					parity.path("cpp_offscreen_color1.raw"), "offscreenColor1"
+				);
+				parity.saveImage(
+					vulkanDevice, queue, filterPass.color[0].image, filterPass.color[0].format,
+					filterPass.width, filterPass.height,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					VK_IMAGE_ASPECT_COLOR_BIT, 0, 0,
+					parity.path("cpp_bloom_filter.raw"), "bloomFilter"
+				);
+				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
