@@ -17,6 +17,7 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
 
 #if defined(__ANDROID__)
 #define SHADOWMAP_DIM 2048
@@ -29,6 +30,10 @@
 class VulkanExample : public VulkanExampleBase
 {
 public:
+	ztgfx::Parity parity;
+	uint32_t shadowMapDim{ SHADOWMAP_DIM };
+	VkFormat shadowDepthFormat{ VK_FORMAT_UNDEFINED };
+
 	bool displayDepthMap = false;
 	int32_t displayDepthMapCascadeIndex = 0;
 	bool colorCascades = false;
@@ -129,6 +134,17 @@ public:
 		camera.setPosition(glm::vec3(-0.12f, 1.14f, -2.25f));
 		camera.setRotation(glm::vec3(-17.0f, 7.0f, 0.0f));
 		timer = 0.2f;
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+			shadowMapDim = 512;
+			filterPCF = false;
+			colorCascades = false;
+			displayDepthMap = false;
+			cascadeSplitLambda = 0.95f;
+			timer = parity.time;
+		}
 	}
 
 	~VulkanExample()
@@ -198,6 +214,10 @@ public:
 	void prepareDepthPass()
 	{
 		VkFormat depthFormat = vulkanDevice->getSupportedDepthFormat(true);
+		if (parity.enabled) {
+			depthFormat = VK_FORMAT_D32_SFLOAT;
+		}
+		shadowDepthFormat = depthFormat;
 
 		/*
 			Depth map renderpass
@@ -257,8 +277,8 @@ public:
 
 		VkImageCreateInfo imageInfo = vks::initializers::imageCreateInfo();
 		imageInfo.imageType = VK_IMAGE_TYPE_2D;
-		imageInfo.extent.width = SHADOWMAP_DIM;
-		imageInfo.extent.height = SHADOWMAP_DIM;
+		imageInfo.extent.width = shadowMapDim;
+		imageInfo.extent.height = shadowMapDim;
 		imageInfo.extent.depth = 1;
 		imageInfo.mipLevels = 1;
 		imageInfo.arrayLayers = SHADOW_MAP_CASCADE_COUNT;
@@ -266,6 +286,9 @@ public:
 		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
 		imageInfo.format = depthFormat;
 		imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		if (parity.enabled) {
+			imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		}
 		VK_CHECK_RESULT(vkCreateImage(device, &imageInfo, nullptr, &depth.image));
 		VkMemoryAllocateInfo memAlloc = vks::initializers::memoryAllocateInfo();
 		VkMemoryRequirements memReqs;
@@ -307,8 +330,8 @@ public:
 			framebufferInfo.renderPass = depthPass.renderPass;
 			framebufferInfo.attachmentCount = 1;
 			framebufferInfo.pAttachments = &cascades[i].view;
-			framebufferInfo.width = SHADOWMAP_DIM;
-			framebufferInfo.height = SHADOWMAP_DIM;
+			framebufferInfo.width = shadowMapDim;
+			framebufferInfo.height = shadowMapDim;
 			framebufferInfo.layers = 1;
 			VK_CHECK_RESULT(vkCreateFramebuffer(device, &framebufferInfo, nullptr, &cascades[i].frameBuffer));
 		}
@@ -653,15 +676,15 @@ public:
 			renderPassBeginInfo.renderPass = depthPass.renderPass;
 			renderPassBeginInfo.renderArea.offset.x = 0;
 			renderPassBeginInfo.renderArea.offset.y = 0;
-			renderPassBeginInfo.renderArea.extent.width = SHADOWMAP_DIM;
-			renderPassBeginInfo.renderArea.extent.height = SHADOWMAP_DIM;
+			renderPassBeginInfo.renderArea.extent.width = shadowMapDim;
+			renderPassBeginInfo.renderArea.extent.height = shadowMapDim;
 			renderPassBeginInfo.clearValueCount = 1;
 			renderPassBeginInfo.pClearValues = clearValues;
 
-			VkViewport viewport = vks::initializers::viewport((float)SHADOWMAP_DIM, (float)SHADOWMAP_DIM, 0.0f, 1.0f);
+			VkViewport viewport = vks::initializers::viewport((float)shadowMapDim, (float)shadowMapDim, 0.0f, 1.0f);
 			vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
 
-			VkRect2D scissor = vks::initializers::rect2D(SHADOWMAP_DIM, SHADOWMAP_DIM, 0, 0);
+			VkRect2D scissor = vks::initializers::rect2D(shadowMapDim, shadowMapDim, 0, 0);
 			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
 
 			// One pass per cascade
@@ -727,18 +750,142 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
+	void dumpParityMetadata(std::string filename)
+	{
+		ztgfx::JsonWriter out(filename);
+		out.key("frame").value(parity.captureFrame);
+		out.key("width").value(width);
+		out.key("height").value(height);
+		out.key("time").value(parity.time);
+
+		out.key("camera").beginObject();
+		out.key("position").array(&camera.position.x, 3);
+		out.key("rotation").array(&camera.rotation.x, 3);
+		out.key("yfov").value(glm::radians(45.0f));
+		out.key("aspect").value((float) width / (float) height);
+		out.key("near").value(zNear);
+		out.key("far").value(zFar);
+		out.key("flipY").value(camera.flipY);
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.endObject();
+
+		auto lightDir = glm::normalize(-lightPos);
+		out.key("light").beginObject();
+		out.key("position").array(&lightPos.x, 3);
+		out.key("direction").array(&lightDir.x, 3);
+		out.endObject();
+
+		out.key("cascades").beginArray();
+		for (uint32_t i = 0; i < SHADOW_MAP_CASCADE_COUNT; i++) {
+			out.beginObject();
+			out.key("splitDepth").value(cascades[i].splitDepth);
+			out.key("viewProj").array(&cascades[i].viewProjMatrix[0][0], 16);
+			out.endObject();
+		}
+		out.endArray();
+
+		out.key("inverseView").array(&uniformDataFragment.inverseViewMat[0][0], 16);
+
+		out.key("uniforms").beginObject();
+		out.key("vertex").beginObject();
+		out.key("projection").array(&uniformDataVertex.projection[0][0], 16);
+		out.key("view").array(&uniformDataVertex.view[0][0], 16);
+		out.key("model").array(&uniformDataVertex.model[0][0], 16);
+		out.key("lightDir").array(&uniformDataVertex.lightDir.x, 3);
+		out.endObject();
+		out.key("fragment").beginObject();
+		out.key("cascadeSplits").array(uniformDataFragment.cascadeSplits, 4);
+		out.key("inverseViewMat").array(&uniformDataFragment.inverseViewMat[0][0], 16);
+		out.key("lightDir").array(&uniformDataFragment.lightDir.x, 3);
+		out.key("colorCascades").value(uniformDataFragment.colorCascades);
+		out.endObject();
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value(static_cast<uint32_t>(swapChain.colorFormat));
+		out.key("shadowMap").value(static_cast<uint32_t>(shadowDepthFormat));
+		out.endObject();
+		out.key("shadowMapDim").value(shadowMapDim);
+		out.key("filterPCF").value(filterPCF);
+		out.key("colorCascades").value(colorCascades);
+		out.key("displayDepthMap").value(displayDepthMap);
+		out.key("cascadeSplitLambda").value(cascadeSplitLambda);
+
+		out.key("pushConstants").beginObject();
+		out.key("position").value("vec4");
+		out.key("cascadeIndex").value("uint");
+		out.endObject();
+
+		out.key("device").beginObject();
+		out.key("name").value(vulkanDevice->properties.deviceName);
+		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+		out.key("vendorID").value(vulkanDevice->properties.vendorID);
+		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		out.endObject();
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared)
 			return;
+
+		if (parity.enabled) {
+			timer = parity.time;
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(-0.12f, 1.14f, -2.25f), glm::vec3(-17.0f, 7.0f, 0.0f)
+			);
+			camera.setPerspective(45.0f, (float) width / (float) height, zNear, zFar);
+			filterPCF = false;
+			colorCascades = false;
+			displayDepthMap = false;
+			cascadeSplitLambda = 0.95f;
+		}
+
 		VulkanExampleBase::prepareFrame();
-		if (!paused || camera.updated) {
+		if (parity.enabled || !paused || camera.updated) {
 			updateLight();
 		}
 		updateCascades();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				for (uint32_t layer = 0; layer < SHADOW_MAP_CASCADE_COUNT; layer++) {
+					parity.saveImage(
+						vulkanDevice, queue, depth.image, shadowDepthFormat,
+						shadowMapDim, shadowMapDim,
+						VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+						VK_IMAGE_ASPECT_DEPTH_BIT, layer, 0,
+						parity.path("cpp_shadow_depth_" + std::to_string(layer) + ".raw"),
+						"shadowDepth" + std::to_string(layer)
+					);
+				}
+				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
