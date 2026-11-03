@@ -36,6 +36,7 @@
 #include "tiny_gltf.h"
 
 #include "vulkanexamplebase.h"
+#include "ztgfx_parity.h"
 #include <vulkan/vulkan.h>
 
 
@@ -129,6 +130,8 @@ class VulkanglTFModel
 		Node *skeletonRoot = nullptr;
 		std::vector<glm::mat4> inverseBindMatrices;
 		std::vector<Node *> joints;
+		// Ordered joint matrices for the current pose (CPU copy for parity capture)
+		std::vector<glm::mat4> jointMatrices;
 		// Animation data changes between frames, it needs to be duplicated (per frame in flight)
 		std::array<vks::Buffer, maxConcurrentFrames> storageBuffers;
 		std::array<VkDescriptorSet, maxConcurrentFrames> descriptorSets{};
@@ -171,6 +174,7 @@ class VulkanglTFModel
 
 	uint32_t activeAnimation = 0;
 	uint32_t currentBuffer = 0;
+	bool     captureJointMatrices = false;
 
 	~VulkanglTFModel();
 	void      loadImages(tinygltf::Model &input);
@@ -192,6 +196,11 @@ class VulkanExample : public VulkanExampleBase
 {
   public:
 	bool wireframe = false;
+
+	ztgfx::Parity parity;
+	float cameraFov = 60.0f;
+	float cameraNear = 0.1f;
+	float cameraFar = 256.0f;
 
 	struct UniformData
 	{
@@ -229,6 +238,8 @@ class VulkanExample : public VulkanExampleBase
 	void         prepareUniformBuffers();
 	void         updateUniformBuffers();
 	void         prepare();
+	void         dumpParityMetadata(std::string filename);
+	void         finishParity();
 	virtual void render();
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay);
 };

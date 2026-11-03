@@ -494,13 +494,18 @@ void VulkanglTFModel::updateJoints(VulkanglTFModel::Node *node)
 	{
 		// Update the joint matrices
 		glm::mat4              inverseTransform = glm::inverse(getNodeMatrix(node));
-		Skin                   skin             = skins[node->skin];
+		Skin &                 skin             = skins[node->skin];
 		size_t                 numJoints        = (uint32_t) skin.joints.size();
 		std::vector<glm::mat4> jointMatrices(numJoints);
 		for (size_t i = 0; i < numJoints; i++)
 		{
 			jointMatrices[i] = getNodeMatrix(skin.joints[i]) * skin.inverseBindMatrices[i];
 			jointMatrices[i] = inverseTransform * jointMatrices[i];
+		}
+		// Keep the ordered CPU copy for parity capture
+		if (captureJointMatrices)
+		{
+			skin.jointMatrices = jointMatrices;
 		}
 		// Update ssbo
 		skin.storageBuffers[currentBuffer].copyTo(jointMatrices.data(), jointMatrices.size() * sizeof(glm::mat4));
@@ -644,7 +649,14 @@ VulkanExample::VulkanExample() : VulkanExampleBase()
 	camera.flipY = true;
 	camera.setPosition(glm::vec3(0.0f, 0.75f, -2.0f));
 	camera.setRotation(glm::vec3(0.0f, 0.0f, 0.0f));
-	camera.setPerspective(60.0f, (float) width / (float) height, 0.1f, 256.0f);
+	camera.setPerspective(cameraFov, (float) width / (float) height, cameraNear, cameraFar);
+
+	parity = ztgfx::Parity::fromEnvironment();
+	if (parity.enabled) {
+		settings.overlay = false;
+		wireframe = false;
+	}
+	glTFModel.captureJointMatrices = parity.enabled;
 }
 
 VulkanExample::~VulkanExample()
@@ -972,19 +984,115 @@ void VulkanExample::buildCommandBuffer()
 	VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 }
 
+void VulkanExample::dumpParityMetadata(std::string filename)
+{
+	ztgfx::JsonWriter out(filename);
+	out.key("frame").value(parity.captureFrame);
+	out.key("width").value(width);
+	out.key("height").value(height);
+	out.key("time").value(parity.time);
+
+	out.key("camera").beginObject();
+	out.key("position").array(&camera.position.x, 3);
+	out.key("rotation").array(&camera.rotation.x, 3);
+	out.key("yfov").value(glm::radians(cameraFov));
+	out.key("aspect").value((float) width / (float) height);
+	out.key("near").value(cameraNear);
+	out.key("far").value(cameraFar);
+	out.key("flipY").value(camera.flipY);
+	out.key("view").array(&camera.matrices.view[0][0], 16);
+	out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+	out.endObject();
+
+	out.key("light").beginObject();
+	out.key("position").array(&uniformData.lightPos.x, 3);
+	out.endObject();
+
+	out.key("uniforms").beginObject();
+	out.key("scene").beginObject();
+	out.key("projection").array(&uniformData.projection[0][0], 16);
+	out.key("view").array(&uniformData.model[0][0], 16);
+	out.key("lightPos").array(&uniformData.lightPos.x, 4);
+	out.endObject();
+	out.endObject();
+
+	out.key("skins").beginArray();
+	for (const auto &skin : glTFModel.skins) {
+		out.beginObject();
+		out.key("name").value(skin.name);
+		out.key("jointCount").value(static_cast<unsigned int>(skin.jointMatrices.size()));
+		out.key("joints").beginArray();
+		for (const auto &matrix : skin.jointMatrices) {
+			out.array(&matrix[0][0], 16);
+		}
+		out.endArray();
+		out.endObject();
+	}
+	out.endArray();
+
+	out.key("device").beginObject();
+	out.key("name").value(vulkanDevice->properties.deviceName);
+	out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+	out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+	out.key("vendorID").value(vulkanDevice->properties.vendorID);
+	out.key("deviceID").value(vulkanDevice->properties.deviceID);
+	out.endObject();
+	out.close();
+}
+
+void VulkanExample::finishParity()
+{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+	quit = true;
+#else
+	std::exit(0);
+#endif
+}
+
 void VulkanExample::render()
 {
 	if (!prepared)
 		return;
+
+	if (parity.enabled) {
+		timer = parity.time;
+		ztgfx::Parity::pinCamera(
+			camera, glm::vec3(0.0f, 0.75f, -2.0f), glm::vec3(0.0f, 0.0f, 0.0f)
+		);
+		camera.setPerspective(
+			cameraFov, (float) width / (float) height, cameraNear, cameraFar
+		);
+	}
+
 	VulkanExampleBase::prepareFrame();
 	updateUniformBuffers();
 	// POI: Advance animation
-	if (!paused) {
+	if (parity.enabled) {
+		if (!glTFModel.animations.empty()) {
+			glTFModel.animations[glTFModel.activeAnimation].currentTime = parity.time;
+		}
+		glTFModel.updateAnimation(0.0f, currentBuffer);
+	} else if (!paused) {
 		glTFModel.updateAnimation(frameTimer, currentBuffer);
 	}
 	buildCommandBuffer();
 	VulkanExampleBase::submitFrame();
 	updateUniformBuffers();
+
+	if (parity.enabled) {
+		vkDeviceWaitIdle(device);
+		if (parity.frame == parity.captureFrame) {
+			parity.saveSwapchain(
+				vulkanDevice, queue, swapChain.images[currentImageIndex],
+				swapChain.colorFormat, width, height,
+				parity.path("cpp_scene.ppm"), "scene"
+			);
+			dumpParityMetadata(parity.path("cpp.json"));
+			parity.writeCaptures(parity.path("captures.json"));
+			finishParity();
+		}
+		parity.frame++;
+	}
 }
 
 void VulkanExample::OnUpdateUIOverlay(vks::UIOverlay *overlay)
