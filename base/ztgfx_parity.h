@@ -57,6 +57,21 @@ public:
 		return *this;
 	}
 
+	JsonWriter& beginArray()
+	{
+		prefix();
+		out << "[";
+		first.push_back(true);
+		return *this;
+	}
+
+	JsonWriter& endArray()
+	{
+		first.pop_back();
+		out << "\n" << indent() << "]";
+		return *this;
+	}
+
 	JsonWriter& value(bool value)
 	{
 		prefix();
@@ -165,12 +180,27 @@ private:
 
 struct Parity
 {
+	struct Capture
+	{
+		std::string name;
+		std::string file;
+		uint32_t width;
+		uint32_t height;
+		VkFormat format;
+		uint32_t layer;
+		int face;
+		uint32_t mip;
+		VkImageAspectFlags aspect;
+		std::string encoding;
+	};
+
 	bool enabled = false;
 	std::string dir = ".";
 	int frame = 0;
 	int captureFrame = 24;
 	int finishFrame = 25;
 	float time = 0.0f;
+	std::vector<Capture> captures;
 
 	static Parity fromEnvironment()
 	{
@@ -208,25 +238,27 @@ struct Parity
 		camera.setRotation(rotation);
 	}
 
-	static void saveSwapchain(
+	void saveSwapchain(
 		vks::VulkanDevice* device, VkQueue queue,
 		VkImage image, VkFormat format,
-		uint32_t width, uint32_t height, const std::string& filename
+		uint32_t width, uint32_t height,
+		const std::string& filename, const std::string& name
 	)
 	{
 		saveImage(
 			device, queue, image, format, width, height,
 			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_ASPECT_COLOR_BIT,
-			0, 0, filename
+			0, 0, filename, name, -1
 		);
 	}
 
-	static void saveImage(
+	void saveImage(
 		vks::VulkanDevice* device, VkQueue queue,
 		VkImage image, VkFormat format,
 		uint32_t width, uint32_t height,
 		VkImageLayout sourceLayout, VkImageAspectFlags aspect,
-		uint32_t layer, uint32_t mip, const std::string& filename
+		uint32_t layer, uint32_t mip,
+		const std::string& filename, const std::string& name, int face = -1
 	)
 	{
 		const uint32_t bytesPerPixel = formatBytesPerPixel(format);
@@ -311,10 +343,49 @@ struct Parity
 
 		buffer.unmap();
 		buffer.destroy();
+
+		captures.push_back(Capture{
+			name, fileName(filename), width, height, format, layer, face, mip,
+			aspect, is8BitColor(format) ? "ppm" : "raw"
+		});
 		std::cout << "Parity capture saved: " << filename << std::endl;
 	}
 
+	void writeCaptures(const std::string& filename) const
+	{
+		JsonWriter out(filename);
+		out.key("captures").beginArray();
+		for (const auto& capture : captures)
+		{
+			out.beginObject();
+			out.key("name").value(capture.name);
+			out.key("file").value(capture.file);
+			out.key("width").value(capture.width);
+			out.key("height").value(capture.height);
+			out.key("format").value(static_cast<unsigned int>(capture.format));
+			out.key("layer").value(capture.layer);
+			if (capture.face >= 0)
+			{
+				out.key("face").value(static_cast<unsigned int>(capture.face));
+			}
+			out.key("mip").value(capture.mip);
+			out.key("aspect").value(
+				(capture.aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? "depth" : "color"
+			);
+			out.key("encoding").value(capture.encoding);
+			out.endObject();
+		}
+		out.endArray();
+		out.close();
+	}
+
 private:
+	static std::string fileName(const std::string& path)
+	{
+		auto slash = path.find_last_of("/\\");
+		return slash == std::string::npos ? path : path.substr(slash + 1);
+	}
+
 	static int envInt(const char* name, int fallback)
 	{
 		auto value = std::getenv(name);

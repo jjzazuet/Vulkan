@@ -224,6 +224,9 @@ public:
 		image.tiling = VK_IMAGE_TILING_OPTIMAL;
 		image.format = offscreenDepthFormat;																// Depth stencil attachment
 		image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;		// We will sample directly from the depth attachment for the shadow mapping
+		if (parity.enabled) {
+			image.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		}
 		VK_CHECK_RESULT(vkCreateImage(device, &image, nullptr, &offscreenPass.depth.image));
 
 		VkMemoryAllocateInfo memAlloc = vks::initializers::memoryAllocateInfo();
@@ -664,14 +667,24 @@ public:
 			if (parity.frame == parity.captureFrame) {
 				parity.saveSwapchain(
 					vulkanDevice, queue, swapChain.images[currentImageIndex],
-					swapChain.colorFormat, width, height, parity.path("cpp_scene.ppm")
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
 				);
 			} else if (parity.frame == parity.finishFrame) {
 				parity.saveSwapchain(
 					vulkanDevice, queue, swapChain.images[currentImageIndex],
-					swapChain.colorFormat, width, height, parity.path("cpp_shadow_map.ppm")
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_shadow_map.ppm"), "shadowMap"
+				);
+				parity.saveImage(
+					vulkanDevice, queue, offscreenPass.depth.image,
+					offscreenDepthFormat, offscreenPass.width, offscreenPass.height,
+					VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+					VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0,
+					parity.path("cpp_shadow_depth.raw"), "shadowDepth"
 				);
 				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
 				finishParity();
 			}
 			parity.frame++;
