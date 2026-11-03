@@ -8,11 +8,14 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
 
 class VulkanExample : public VulkanExampleBase
 {
 public:
 	bool displayCubeMap{ false };
+
+	ztgfx::Parity parity;
 
 	// Defines the depth range used for the shadow maps
 	// This should be kept as small as possible for precision
@@ -92,6 +95,13 @@ public:
 		camera.setRotation(glm::vec3(-20.5f, -673.0f, 0.0f));
 		camera.setPosition(glm::vec3(0.0f, 0.5f, -15.0f));
 		timerSpeed *= 0.5f;
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+			displayCubeMap = false;
+			paused = false;
+		}
 	}
 
 	~VulkanExample()
@@ -141,6 +151,9 @@ public:
 		imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 		imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
 		imageCreateInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		if (parity.enabled) {
+			imageCreateInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		}
 		imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		imageCreateInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
@@ -224,6 +237,14 @@ public:
 		// Find a suitable depth format for
 		VkBool32 validDepthFormat = vks::tools::getSupportedDepthFormat(physicalDevice, &offscreenDepthFormat);
 		assert(validDepthFormat);
+		if (parity.enabled) {
+			// The parity raw golden is a single-component depth buffer; the
+			// runtime-selected format may be a combined depth-stencil format.
+			VkFormatProperties depthProps{};
+			vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_D32_SFLOAT, &depthProps);
+			assert(depthProps.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+			offscreenDepthFormat = VK_FORMAT_D32_SFLOAT;
+		}
 
 		osAttachments[0].format = offscreenImageFormat;
 		osAttachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -498,7 +519,12 @@ public:
 	void updateUniformBuffers()
 	{
 		// Depth rendering
-		if (!paused) {
+		if (parity.enabled) {
+			timer = parity.time;
+			lightPos.x = sin(glm::radians(timer * 360.0f)) * 0.15f;
+			lightPos.z = cos(glm::radians(timer * 360.0f)) * 0.15f;
+			lightPos.y = -2.5f;
+		} else if (!paused) {
 			lightPos.x = sin(glm::radians(timer * 360.0f)) * 0.15f;
 			lightPos.z = cos(glm::radians(timer * 360.0f)) * 0.15f;
 		}
@@ -529,26 +555,8 @@ public:
 		prepared = true;
 	}
 
-	// Updates a single cube map face
-	// Renders the scene with face's view directly to the cubemap layer `faceIndex`
-	// Uses push constants for quick update of view matrix for the current cube map face
-	void updateCubeFace(uint32_t faceIndex, VkCommandBuffer commandBuffer)
+	glm::mat4 cubeFaceView(uint32_t faceIndex)
 	{
-		VkClearValue clearValues[2];
-		clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
-		clearValues[1].depthStencil = { 1.0f, 0 };
-
-		VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
-		// Reuse render pass from example pass
-		renderPassBeginInfo.renderPass = offscreenPass.renderPass;
-		renderPassBeginInfo.framebuffer = offscreenPass.frameBuffers[faceIndex];
-		renderPassBeginInfo.renderArea.extent.width = offscreenPass.width;
-		renderPassBeginInfo.renderArea.extent.height = offscreenPass.height;
-		renderPassBeginInfo.clearValueCount = 2;
-		renderPassBeginInfo.pClearValues = clearValues;
-
-		// Update view matrix via push constant
-
 		glm::mat4 viewMatrix = glm::mat4(1.0f);
 		switch (faceIndex)
 		{
@@ -573,6 +581,29 @@ public:
 			viewMatrix = glm::rotate(viewMatrix, glm::radians(180.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 			break;
 		}
+		return viewMatrix;
+	}
+
+	// Updates a single cube map face
+	// Renders the scene with face's view directly to the cubemap layer `faceIndex`
+	// Uses push constants for quick update of view matrix for the current cube map face
+	void updateCubeFace(uint32_t faceIndex, VkCommandBuffer commandBuffer)
+	{
+		VkClearValue clearValues[2];
+		clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
+		clearValues[1].depthStencil = { 1.0f, 0 };
+
+		VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
+		// Reuse render pass from example pass
+		renderPassBeginInfo.renderPass = offscreenPass.renderPass;
+		renderPassBeginInfo.framebuffer = offscreenPass.frameBuffers[faceIndex];
+		renderPassBeginInfo.renderArea.extent.width = offscreenPass.width;
+		renderPassBeginInfo.renderArea.extent.height = offscreenPass.height;
+		renderPassBeginInfo.clearValueCount = 2;
+		renderPassBeginInfo.pClearValues = clearValues;
+
+		// Update view matrix via push constant
+		glm::mat4 viewMatrix = cubeFaceView(faceIndex);
 
 		// Render scene from cube face's point of view
 		vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -668,14 +699,138 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
+	void dumpParityMetadata(std::string filename)
+	{
+		ztgfx::JsonWriter out(filename);
+		out.key("frame").value(parity.captureFrame);
+		out.key("width").value(width);
+		out.key("height").value(height);
+		out.key("time").value(parity.time);
+
+		out.key("camera").beginObject();
+		out.key("position").array(&camera.position.x, 3);
+		out.key("rotation").array(&camera.rotation.x, 3);
+		out.key("yfov").value(glm::radians(45.0f));
+		out.key("aspect").value((float) width / (float) height);
+		out.key("near").value(zNear);
+		out.key("far").value(zFar);
+		out.key("flipY").value(camera.flipY);
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.endObject();
+
+		out.key("light").beginObject();
+		out.key("position").array(&lightPos.x, 3);
+		out.endObject();
+
+		out.key("offscreen").beginObject();
+		out.key("projection").array(&uniformDataOffscreen.projection[0][0], 16);
+		out.key("model").array(&uniformDataOffscreen.model[0][0], 16);
+		out.key("views").beginArray();
+		for (uint32_t face = 0; face < 6; face++) {
+			auto view = cubeFaceView(face);
+			out.array(&view[0][0], 16);
+		}
+		out.endArray();
+		out.key("viewProj").beginArray();
+		for (uint32_t face = 0; face < 6; face++) {
+			auto viewProj = uniformDataOffscreen.projection * cubeFaceView(face);
+			out.array(&viewProj[0][0], 16);
+		}
+		out.endArray();
+		out.endObject();
+
+		out.key("uniforms").beginObject();
+		out.key("scene").beginObject();
+		out.key("projection").array(&uniformDataScene.projection[0][0], 16);
+		out.key("view").array(&uniformDataScene.view[0][0], 16);
+		out.key("model").array(&uniformDataScene.model[0][0], 16);
+		out.key("lightPos").array(&uniformDataScene.lightPos.x, 4);
+		out.endObject();
+		out.key("offscreen").beginObject();
+		out.key("projection").array(&uniformDataOffscreen.projection[0][0], 16);
+		out.key("view").array(&uniformDataOffscreen.view[0][0], 16);
+		out.key("model").array(&uniformDataOffscreen.model[0][0], 16);
+		out.key("lightPos").array(&uniformDataOffscreen.lightPos.x, 4);
+		out.endObject();
+		out.endObject();
+
+		out.key("shadow").beginObject();
+		out.key("size").value(offscreenImageSize);
+		out.key("colorFormat").value(static_cast<uint32_t>(offscreenImageFormat));
+		out.key("depthFormat").value(static_cast<uint32_t>(offscreenDepthFormat));
+		out.key("depthFace").value(5u);
+		out.endObject();
+
+		out.key("device").beginObject();
+		out.key("name").value(vulkanDevice->properties.deviceName);
+		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+		out.key("vendorID").value(vulkanDevice->properties.vendorID);
+		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		out.endObject();
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared)
 			return;
+
+		if (parity.enabled) {
+			timer = parity.time;
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(0.0f, 0.5f, -15.0f), glm::vec3(-20.5f, -673.0f, 0.0f)
+			);
+			camera.setPerspective(45.0f, (float) width / (float) height, zNear, zFar);
+		}
+
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				for (uint32_t face = 0; face < 6; face++) {
+					auto name = "shadowFace" + std::to_string(face);
+					parity.saveImage(
+						vulkanDevice, queue, shadowCubeMap.image, offscreenImageFormat,
+						offscreenImageSize, offscreenImageSize,
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+						VK_IMAGE_ASPECT_COLOR_BIT, face, 0,
+						parity.path("cpp_shadow_face_" + std::to_string(face) + ".raw"),
+						name, static_cast<int>(face)
+					);
+				}
+				parity.saveImage(
+					vulkanDevice, queue, offscreenPass.depth.image, offscreenDepthFormat,
+					offscreenPass.width, offscreenPass.height,
+					VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+					VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0,
+					parity.path("cpp_shadow_depth.raw"), "shadowDepth"
+				);
+				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
