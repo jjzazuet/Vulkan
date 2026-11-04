@@ -18,6 +18,8 @@ public:
 	bool displaySkybox = true;
 	ztgfx::Parity parity;
 	std::string environmentPath;
+	std::string pbrTextureDir;
+	bool sceneParity = false;
 
 	struct Textures {
 		vks::TextureCubeMap environmentCube;
@@ -85,6 +87,14 @@ public:
 		if (parity.enabled) {
 			settings.overlay = false;
 		}
+		const char* pbrDir = std::getenv("ZTGFX_PARITY_PBRTEXTURE_DIR");
+		sceneParity = parity.enabled && pbrDir != nullptr && *pbrDir != '\0';
+		if (sceneParity) {
+			pbrTextureDir = pbrDir;
+			if (!pbrTextureDir.empty() && pbrTextureDir.back() != '/') {
+				pbrTextureDir += '/';
+			}
+		}
 	}
 
 	~VulkanExample()
@@ -129,13 +139,17 @@ public:
 			environmentPath = getAssetPath() + "textures/hdr/gcanyon_cube.ktx";
 		}
 		textures.environmentCube.loadFromFile(environmentPath, VK_FORMAT_R16G16B16A16_SFLOAT, vulkanDevice, queue);
-		if (!parity.enabled) {
-			models.object.loadFromFile(getAssetPath() + "models/cerberus/cerberus.gltf", vulkanDevice, queue, glTFLoadingFlags);
-			textures.albedoMap.loadFromFile(getAssetPath() + "models/cerberus/albedo.ktx", VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, queue);
-			textures.normalMap.loadFromFile(getAssetPath() + "models/cerberus/normal.ktx", VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, queue);
-			textures.aoMap.loadFromFile(getAssetPath() + "models/cerberus/ao.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
-			textures.metallicMap.loadFromFile(getAssetPath() + "models/cerberus/metallic.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
-			textures.roughnessMap.loadFromFile(getAssetPath() + "models/cerberus/roughness.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
+		textures.environmentCube.layerCount = 6;
+		if (!parity.enabled || sceneParity) {
+			const std::string objectDir = sceneParity
+				? pbrTextureDir
+				: getAssetPath() + "models/cerberus/";
+			models.object.loadFromFile(objectDir + "cerberus.gltf", vulkanDevice, queue, glTFLoadingFlags);
+			textures.albedoMap.loadFromFile(objectDir + "albedo.ktx", VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, queue);
+			textures.normalMap.loadFromFile(objectDir + "normal.ktx", VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, queue);
+			textures.aoMap.loadFromFile(objectDir + "ao.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
+			textures.metallicMap.loadFromFile(objectDir + "metallic.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
+			textures.roughnessMap.loadFromFile(objectDir + "roughness.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
 		}
 	}
 
@@ -297,6 +311,10 @@ public:
 		textures.lutBrdf.descriptor.sampler = textures.lutBrdf.sampler;
 		textures.lutBrdf.descriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		textures.lutBrdf.device = vulkanDevice;
+		textures.lutBrdf.width = dim;
+		textures.lutBrdf.height = dim;
+		textures.lutBrdf.mipLevels = 1;
+		textures.lutBrdf.layerCount = 1;
 
 		// FB, Att, RP, Pipe, etc.
 		VkAttachmentDescription attDesc = {};
@@ -504,6 +522,10 @@ public:
 		textures.irradianceCube.descriptor.sampler = textures.irradianceCube.sampler;
 		textures.irradianceCube.descriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		textures.irradianceCube.device = vulkanDevice;
+		textures.irradianceCube.width = dim;
+		textures.irradianceCube.height = dim;
+		textures.irradianceCube.mipLevels = numMips;
+		textures.irradianceCube.layerCount = 6;
 
 		// FB, Att, RP, Pipe, etc.
 		VkAttachmentDescription attDesc = {};
@@ -884,6 +906,10 @@ public:
 		textures.prefilteredCube.descriptor.sampler = textures.prefilteredCube.sampler;
 		textures.prefilteredCube.descriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		textures.prefilteredCube.device = vulkanDevice;
+		textures.prefilteredCube.width = dim;
+		textures.prefilteredCube.height = dim;
+		textures.prefilteredCube.mipLevels = numMips;
+		textures.prefilteredCube.layerCount = 6;
 
 		// FB, Att, RP, Pipe, etc.
 		VkAttachmentDescription attDesc = {};
@@ -1397,6 +1423,119 @@ public:
 		std::exit(0);
 	}
 
+	void dumpTexture(ztgfx::JsonWriter& out, const std::string& name,
+		const std::string& path, VkFormat format, const vks::Texture& texture)
+	{
+		out.key(name).beginObject();
+		out.key("path").value(path);
+		out.key("format").value(static_cast<unsigned int>(format));
+		out.key("width").value((int)texture.width);
+		out.key("height").value((int)texture.height);
+		out.key("mips").value((int)texture.mipLevels);
+		out.key("layers").value((int)texture.layerCount);
+		out.endObject();
+	}
+
+	void dumpSceneParityMetadata(std::string filename)
+	{
+		const glm::mat4 sceneModel = glm::rotate(
+			glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(0.0f, 1.0f, 0.0f)
+		);
+		const glm::mat4 skyboxModel = glm::mat4(glm::mat3(camera.matrices.view));
+		const glm::vec3 camPos = camera.position * -1.0f;
+
+		ztgfx::JsonWriter out(filename);
+		out.key("frame").value(parity.captureFrame);
+		out.key("width").value((int)width);
+		out.key("height").value((int)height);
+		out.key("time").value(parity.time);
+
+		out.key("camera").beginObject();
+		out.key("position").array(&camera.position.x, 3);
+		out.key("rotation").array(&camera.rotation.x, 3);
+		out.key("yfov").value(glm::radians(60.0f));
+		out.key("aspect").value((float)width / (float)height);
+		out.key("near").value(0.1f);
+		out.key("far").value(256.0f);
+		out.key("flipY").value(camera.flipY);
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.endObject();
+
+		out.key("light").beginObject().endObject();
+
+		out.key("uniforms").beginObject();
+		out.key("scene").beginObject();
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.key("model").array(&sceneModel[0][0], 16);
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("camPos").array(&camPos.x, 3);
+		out.endObject();
+		out.key("skybox").beginObject();
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.key("model").array(&skyboxModel[0][0], 16);
+		out.endObject();
+		out.key("params").beginObject();
+		out.key("lights").beginArray();
+		for (const auto& light : uniformDataParams.lights) {
+			out.array(&light.x, 4);
+		}
+		out.endArray();
+		out.key("exposure").value(uniformDataParams.exposure);
+		out.key("gamma").value(uniformDataParams.gamma);
+		out.endObject();
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value((unsigned int)swapChain.colorFormat);
+		out.key("depth").value((unsigned int)depthFormat);
+		out.endObject();
+		const float clearColor[4] = {0.1f, 0.1f, 0.1f, 1.0f};
+		out.key("clearColor").array(clearColor, 4);
+
+		out.key("textures").beginObject();
+		dumpTexture(out, "env", environmentPath,
+			VK_FORMAT_R16G16B16A16_SFLOAT, textures.environmentCube);
+		dumpTexture(out, "irradiance", "", VK_FORMAT_R32G32B32A32_SFLOAT,
+			textures.irradianceCube);
+		dumpTexture(out, "prefiltered", "", VK_FORMAT_R16G16B16A16_SFLOAT,
+			textures.prefilteredCube);
+		dumpTexture(out, "brdfLut", "", VK_FORMAT_R16G16_SFLOAT,
+			textures.lutBrdf);
+		const std::string objectDir = sceneParity
+			? pbrTextureDir
+			: getAssetPath() + "models/cerberus/";
+		dumpTexture(out, "albedo", objectDir + "albedo.ktx",
+			VK_FORMAT_R8G8B8A8_UNORM, textures.albedoMap);
+		dumpTexture(out, "normal", objectDir + "normal.ktx",
+			VK_FORMAT_R8G8B8A8_UNORM, textures.normalMap);
+		dumpTexture(out, "ao", objectDir + "ao.ktx",
+			VK_FORMAT_R8_UNORM, textures.aoMap);
+		dumpTexture(out, "metallic", objectDir + "metallic.ktx",
+			VK_FORMAT_R8_UNORM, textures.metallicMap);
+		dumpTexture(out, "roughness", objectDir + "roughness.ktx",
+			VK_FORMAT_R8_UNORM, textures.roughnessMap);
+		out.endObject();
+
+		out.key("device").beginObject();
+		out.key("name").value(vulkanDevice->properties.deviceName);
+		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+		out.key("vendorID").value(vulkanDevice->properties.vendorID);
+		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		out.endObject();
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	void prepare()
 	{
 		VulkanExampleBase::prepare();
@@ -1404,7 +1543,7 @@ public:
 		generateBRDFLUT();
 		generateIrradianceCube();
 		generatePrefilteredCube();
-		if (parity.enabled) {
+		if (parity.enabled && !sceneParity) {
 			captureIblParity();
 		}
 		prepareUniformBuffers();
@@ -1473,6 +1612,21 @@ public:
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (sceneParity) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				dumpSceneParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
