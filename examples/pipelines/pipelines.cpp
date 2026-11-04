@@ -10,11 +10,13 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
 
 class VulkanExample: public VulkanExampleBase
 {
 public:
 	vkglTF::Model scene;
+	ztgfx::Parity parity;
 
 	struct UniformData {
 		glm::mat4 projection;
@@ -41,6 +43,12 @@ public:
 		camera.setRotation(glm::vec3(-25.0f, 15.0f, 0.0f));
 		camera.setRotationSpeed(0.5f);
 		camera.setPerspective(60.0f, (float)(width / 3.0f) / (float)height, 0.1f, 256.0f);
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+			uniformData.lightPos = glm::vec4(0.0f, 2.0f, 1.0f, 0.0f);
+		}
 	}
 
 	~VulkanExample()
@@ -270,14 +278,159 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
+
+	void dumpPipelineState(
+		ztgfx::JsonWriter& out, const char* name, VkPolygonMode polygonMode,
+		const char* vertexShader, const char* fragmentShader,
+		float lineWidth, bool created)
+	{
+		out.key(name).beginObject();
+		out.key("polygonMode").value(
+			polygonMode == VK_POLYGON_MODE_LINE ? "LINE" : "FILL"
+		);
+		out.key("cullMode").value("BACK");
+		out.key("frontFace").value("COUNTER_CLOCKWISE");
+		out.key("lineWidth").value(lineWidth);
+		out.key("depthCompare").value("LESS_OR_EQUAL");
+		out.key("vertexShader").value(vertexShader);
+		out.key("fragmentShader").value(fragmentShader);
+		out.key("created").value(created);
+		out.endObject();
+	}
+
+	void dumpParityMetadata(std::string filename)
+	{
+		const float aspect = ((float)width / 3.0f) / (float)height;
+		const bool wireframeCreated = enabledFeatures.fillModeNonSolid;
+		const float lineWidth = enabledFeatures.wideLines ? 2.0f : 1.0f;
+
+		ztgfx::JsonWriter out(filename);
+		out.key("frame").value(parity.captureFrame);
+		out.key("width").value(width);
+		out.key("height").value(height);
+		out.key("time").value(parity.time);
+
+		out.key("camera").beginObject();
+		out.key("position").array(&camera.position.x, 3);
+		out.key("rotation").array(&camera.rotation.x, 3);
+		out.key("yfov").value(glm::radians(60.0f));
+		out.key("aspect").value(aspect);
+		out.key("near").value(0.1f);
+		out.key("far").value(256.0f);
+		out.key("flipY").value(camera.flipY);
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.endObject();
+
+		glm::vec3 lightPos(0.0f, 2.0f, 1.0f);
+		out.key("light").beginObject();
+		out.key("position").array(&lightPos.x, 3);
+		out.endObject();
+
+		out.key("uniforms").beginObject();
+		out.key("projection").array(&uniformData.projection[0][0], 16);
+		out.key("modelView").array(&uniformData.modelView[0][0], 16);
+		out.key("lightPos").array(&uniformData.lightPos.x, 4);
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value((unsigned int)swapChain.colorFormat);
+		out.key("depth").value((unsigned int)depthFormat);
+		out.endObject();
+		out.key("clearColor").array(defaultClearColor.float32, 4);
+
+		out.key("viewports").beginArray();
+		for (int i = 0; i < 3; i++) {
+			out.beginObject();
+			out.key("x").value(((float)width / 3.0f) * i);
+			out.key("y").value(0.0f);
+			out.key("width").value((float)width / 3.0f);
+			out.key("height").value((float)height);
+			out.key("minDepth").value(0.0f);
+			out.key("maxDepth").value(1.0f);
+			out.endObject();
+		}
+		out.endArray();
+
+		out.key("scissors").beginArray();
+		for (int i = 0; i < 3; i++) {
+			out.beginObject();
+			out.key("x").value(0);
+			out.key("y").value(0);
+			out.key("width").value(width);
+			out.key("height").value(height);
+			out.endObject();
+		}
+		out.endArray();
+
+		out.key("features").beginObject();
+		out.key("wideLines").value(enabledFeatures.wideLines != 0);
+		out.key("fillModeNonSolid").value(enabledFeatures.fillModeNonSolid != 0);
+		out.endObject();
+
+		out.key("pipelines").beginObject();
+		dumpPipelineState(out, "phong", VK_POLYGON_MODE_FILL,
+			"pipelines/phong.vert.spv", "pipelines/phong.frag.spv", 1.0f, true);
+		dumpPipelineState(out, "toon", VK_POLYGON_MODE_FILL,
+			"pipelines/toon.vert.spv", "pipelines/toon.frag.spv",
+			lineWidth, true);
+		dumpPipelineState(out, "wireframe", VK_POLYGON_MODE_LINE,
+			"pipelines/wireframe.vert.spv", "pipelines/wireframe.frag.spv",
+			lineWidth, wireframeCreated);
+		out.endObject();
+
+		out.key("device").beginObject();
+		out.key("name").value(vulkanDevice->properties.deviceName);
+		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+		out.key("vendorID").value(vulkanDevice->properties.vendorID);
+		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		out.endObject();
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared)
 			return;
+		if (parity.enabled) {
+			timer = parity.time;
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(0.0f, 0.0f, -10.5f),
+				glm::vec3(-25.0f, 15.0f, 0.0f)
+			);
+			camera.setPerspective(
+				60.0f, ((float)width / 3.0f) / (float)height, 0.1f, 256.0f
+			);
+		}
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
