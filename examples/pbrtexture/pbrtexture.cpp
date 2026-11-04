@@ -10,11 +10,14 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
 
 class VulkanExample : public VulkanExampleBase
 {
 public:
 	bool displaySkybox = true;
+	ztgfx::Parity parity;
+	std::string environmentPath;
 
 	struct Textures {
 		vks::TextureCubeMap environmentCube;
@@ -77,6 +80,11 @@ public:
 		camera.rotationSpeed = 0.25f;
 		camera.setRotation({ -7.75f, 150.25f, 0.0f });
 		camera.setPosition({ 0.7f, 0.1f, 1.7f });
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+		}
 	}
 
 	~VulkanExample()
@@ -114,13 +122,21 @@ public:
 	{
 		const uint32_t glTFLoadingFlags = vkglTF::FileLoadingFlags::PreTransformVertices | vkglTF::FileLoadingFlags::PreMultiplyVertexColors | vkglTF::FileLoadingFlags::FlipY;
 		models.skybox.loadFromFile(getAssetPath() + "models/cube.gltf", vulkanDevice, queue, glTFLoadingFlags);
-		models.object.loadFromFile(getAssetPath() + "models/cerberus/cerberus.gltf", vulkanDevice, queue, glTFLoadingFlags);
-		textures.environmentCube.loadFromFile(getAssetPath() + "textures/hdr/gcanyon_cube.ktx", VK_FORMAT_R16G16B16A16_SFLOAT, vulkanDevice, queue);
-		textures.albedoMap.loadFromFile(getAssetPath() + "models/cerberus/albedo.ktx", VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, queue);
-		textures.normalMap.loadFromFile(getAssetPath() + "models/cerberus/normal.ktx", VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, queue);
-		textures.aoMap.loadFromFile(getAssetPath() + "models/cerberus/ao.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
-		textures.metallicMap.loadFromFile(getAssetPath() + "models/cerberus/metallic.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
-		textures.roughnessMap.loadFromFile(getAssetPath() + "models/cerberus/roughness.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
+		const char* parityEnv = std::getenv("ZTGFX_PARITY_ENVMAP");
+		if (parity.enabled && parityEnv != nullptr && *parityEnv != '\0') {
+			environmentPath = parityEnv;
+		} else {
+			environmentPath = getAssetPath() + "textures/hdr/gcanyon_cube.ktx";
+		}
+		textures.environmentCube.loadFromFile(environmentPath, VK_FORMAT_R16G16B16A16_SFLOAT, vulkanDevice, queue);
+		if (!parity.enabled) {
+			models.object.loadFromFile(getAssetPath() + "models/cerberus/cerberus.gltf", vulkanDevice, queue, glTFLoadingFlags);
+			textures.albedoMap.loadFromFile(getAssetPath() + "models/cerberus/albedo.ktx", VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, queue);
+			textures.normalMap.loadFromFile(getAssetPath() + "models/cerberus/normal.ktx", VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, queue);
+			textures.aoMap.loadFromFile(getAssetPath() + "models/cerberus/ao.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
+			textures.metallicMap.loadFromFile(getAssetPath() + "models/cerberus/metallic.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
+			textures.roughnessMap.loadFromFile(getAssetPath() + "models/cerberus/roughness.ktx", VK_FORMAT_R8_UNORM, vulkanDevice, queue);
+		}
 	}
 
 	void setupDescriptors()
@@ -1228,6 +1244,159 @@ public:
 		memcpy(uniformBuffers[currentBuffer].params.mapped, &uniformDataParams, sizeof(UniformDataParams));
 	}
 
+	std::vector<glm::mat4> iblFaceMatrices()
+	{
+		return {
+			glm::rotate(glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f)), glm::radians(180.0f), glm::vec3(1.0f, 0.0f, 0.0f)),
+			glm::rotate(glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(0.0f, 1.0f, 0.0f)), glm::radians(180.0f), glm::vec3(1.0f, 0.0f, 0.0f)),
+			glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f)),
+			glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f)),
+			glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(1.0f, 0.0f, 0.0f)),
+			glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0.0f, 0.0f, 1.0f)),
+		};
+	}
+
+	void dumpIblParityMetadata(std::string filename)
+	{
+		const uint32_t irradianceDim = 64;
+		const uint32_t irradianceMips = static_cast<uint32_t>(floor(log2(irradianceDim))) + 1;
+		const uint32_t prefilteredDim = 512;
+		const uint32_t prefilteredMips = static_cast<uint32_t>(floor(log2(prefilteredDim))) + 1;
+		const float deltaPhi = (2.0f * float(M_PI)) / 180.0f;
+		const float deltaTheta = (0.5f * float(M_PI)) / 64.0f;
+		const uint32_t prefilterSamples = 32u;
+		const uint32_t lutSamples = 1024u;
+		const glm::mat4 perspective = glm::perspective(
+			static_cast<float>(M_PI / 2.0), 1.0f, 0.1f, 512.0f
+		);
+		auto faces = iblFaceMatrices();
+
+		ztgfx::JsonWriter out(filename);
+		out.key("frame").value(parity.captureFrame);
+		out.key("width").value((int)width);
+		out.key("height").value((int)height);
+		out.key("time").value(parity.time);
+		out.key("envPath").value(environmentPath);
+
+		out.key("camera").beginObject().endObject();
+		out.key("light").beginObject().endObject();
+		out.key("uniforms").beginObject().endObject();
+
+		out.key("env").beginObject();
+		out.key("format").value((unsigned int)VK_FORMAT_R16G16B16A16_SFLOAT);
+		out.key("width").value((int)textures.environmentCube.width);
+		out.key("height").value((int)textures.environmentCube.height);
+		out.key("mips").value((int)textures.environmentCube.mipLevels);
+		out.key("layers").value(6);
+		out.endObject();
+
+		const float irradianceClear[4] = {0.0f, 0.0f, 0.2f, 0.0f};
+		out.key("irradiance").beginObject();
+		out.key("format").value((unsigned int)VK_FORMAT_R32G32B32A32_SFLOAT);
+		out.key("width").value((int)irradianceDim);
+		out.key("height").value((int)irradianceDim);
+		out.key("mips").value((int)irradianceMips);
+		out.key("layers").value(6);
+		out.key("clearColor").array(irradianceClear, 4);
+		out.key("deltaPhi").value(deltaPhi);
+		out.key("deltaTheta").value(deltaTheta);
+		out.endObject();
+
+		const float prefilteredClear[4] = {0.0f, 0.0f, 0.2f, 0.0f};
+		out.key("prefiltered").beginObject();
+		out.key("format").value((unsigned int)VK_FORMAT_R16G16B16A16_SFLOAT);
+		out.key("width").value((int)prefilteredDim);
+		out.key("height").value((int)prefilteredDim);
+		out.key("mips").value((int)prefilteredMips);
+		out.key("layers").value(6);
+		out.key("clearColor").array(prefilteredClear, 4);
+		out.key("numSamples").value((int)prefilterSamples);
+		out.key("roughness").beginArray();
+		for (uint32_t m = 0; m < prefilteredMips; m++) {
+			out.value((float)m / (float)(prefilteredMips - 1));
+		}
+		out.endArray();
+		out.endObject();
+
+		const float lutClear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+		out.key("lut").beginObject();
+		out.key("format").value((unsigned int)VK_FORMAT_R16G16_SFLOAT);
+		out.key("width").value(512);
+		out.key("height").value(512);
+		out.key("mips").value(1);
+		out.key("layers").value(1);
+		out.key("clearColor").array(lutClear, 4);
+		out.key("numSamples").value((int)lutSamples);
+		out.endObject();
+
+		out.key("perspective").array(&perspective[0][0], 16);
+		out.key("faceMatrices").beginArray();
+		for (const auto& face : faces) {
+			out.array(&face[0][0], 16);
+		}
+		out.endArray();
+		out.key("viewProj").beginArray();
+		for (const auto& face : faces) {
+			const glm::mat4 mvp = perspective * face;
+			out.array(&mvp[0][0], 16);
+		}
+		out.endArray();
+
+		out.key("sampler").beginObject();
+		out.key("minFilter").value("LINEAR");
+		out.key("magFilter").value("LINEAR");
+		out.key("mipmapMode").value("LINEAR");
+		out.key("addressModeU").value("CLAMP_TO_EDGE");
+		out.key("addressModeV").value("CLAMP_TO_EDGE");
+		out.key("addressModeW").value("CLAMP_TO_EDGE");
+		out.key("minLod").value(0.0f);
+		out.key("maxLod").value((float)textures.environmentCube.mipLevels);
+		out.key("borderColor").value("FLOAT_OPAQUE_WHITE");
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value((unsigned int)swapChain.colorFormat);
+		out.key("depth").value((unsigned int)depthFormat);
+		out.endObject();
+
+		out.key("device").beginObject();
+		out.key("name").value(vulkanDevice->properties.deviceName);
+		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+		out.key("vendorID").value(vulkanDevice->properties.vendorID);
+		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		out.endObject();
+		out.close();
+	}
+
+	void saveIblCapture(
+		const vks::Texture& texture, VkFormat format, uint32_t dim,
+		uint32_t mip, uint32_t layer, const std::string& name
+	) {
+		const uint32_t mipWidth = std::max(1u, dim >> mip);
+		const uint32_t mipHeight = std::max(1u, dim >> mip);
+		parity.saveImage(
+			vulkanDevice, queue, texture.image, format, mipWidth, mipHeight,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+			layer, mip, parity.path("cpp_" + name + ".raw"), "cpp_" + name
+		);
+	}
+
+	void captureIblParity()
+	{
+		vkDeviceWaitIdle(device);
+		saveIblCapture(textures.irradianceCube, VK_FORMAT_R32G32B32A32_SFLOAT, 64, 0, 0, "irradiance_0_0");
+		saveIblCapture(textures.irradianceCube, VK_FORMAT_R32G32B32A32_SFLOAT, 64, 3, 2, "irradiance_3_2");
+		saveIblCapture(textures.irradianceCube, VK_FORMAT_R32G32B32A32_SFLOAT, 64, 5, 5, "irradiance_5_5");
+		saveIblCapture(textures.prefilteredCube, VK_FORMAT_R16G16B16A16_SFLOAT, 512, 0, 0, "prefiltered_0_0");
+		saveIblCapture(textures.prefilteredCube, VK_FORMAT_R16G16B16A16_SFLOAT, 512, 5, 1, "prefiltered_5_1");
+		saveIblCapture(textures.prefilteredCube, VK_FORMAT_R16G16B16A16_SFLOAT, 512, 9, 5, "prefiltered_9_5");
+		saveIblCapture(textures.lutBrdf, VK_FORMAT_R16G16_SFLOAT, 512, 0, 0, "brdf_lut");
+		dumpIblParityMetadata(parity.path("cpp.json"));
+		parity.writeCaptures(parity.path("captures.json"));
+		std::exit(0);
+	}
+
 	void prepare()
 	{
 		VulkanExampleBase::prepare();
@@ -1235,6 +1404,9 @@ public:
 		generateBRDFLUT();
 		generateIrradianceCube();
 		generatePrefilteredCube();
+		if (parity.enabled) {
+			captureIblParity();
+		}
 		prepareUniformBuffers();
 		setupDescriptors();
 		preparePipelines();
