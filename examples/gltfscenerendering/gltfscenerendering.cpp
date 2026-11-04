@@ -51,6 +51,7 @@ void VulkanglTFScene::loadImages(tinygltf::Model& input)
 	images.resize(input.images.size());
 	for (size_t i = 0; i < input.images.size(); i++) {
 		tinygltf::Image& glTFImage = input.images[i];
+		images[i].uri = glTFImage.uri;
 		images[i].texture.loadFromFile(path + "/" + glTFImage.uri, VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, copyQueue);
 	}
 }
@@ -69,6 +70,7 @@ void VulkanglTFScene::loadMaterials(tinygltf::Model& input)
 	for (size_t i = 0; i < input.materials.size(); i++) {
 		// We only read the most basic properties required for our sample
 		tinygltf::Material glTFMaterial = input.materials[i];
+		materials[i].name = glTFMaterial.name;
 		// Get the base color factor
 		if (glTFMaterial.values.find("baseColorFactor") != glTFMaterial.values.end()) {
 			materials[i].baseColorFactor = glm::make_vec4(glTFMaterial.values["baseColorFactor"].ColorFactor().data());
@@ -292,6 +294,16 @@ VulkanExample::VulkanExample() : VulkanExampleBase()
 	camera.setPosition(glm::vec3(0.0f, 1.0f, 0.0f));
 	camera.setRotation(glm::vec3(0.0f, -90.0f, 0.0f));
 	camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 256.0f);
+
+	parity = ztgfx::Parity::fromEnvironment();
+	if (parity.enabled) {
+		settings.overlay = false;
+		camera.flipY = true;
+		camera.setPosition(glm::vec3(0.0f, 1.0f, 0.0f));
+		camera.setRotation(glm::vec3(0.0f, -90.0f, 0.0f));
+		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 256.0f);
+		uniformData.lightPos = glm::vec4(0.0f, 2.5f, 0.0f, 1.0f);
+	}
 }
 
 VulkanExample::~VulkanExample()
@@ -418,7 +430,13 @@ void VulkanExample::loadglTFFile(std::string filename)
 
 void VulkanExample::loadAssets()
 {
-	loadglTFFile(getAssetPath() + "models/sponza/sponza.gltf");
+	const char* parityScene = std::getenv("ZTGFX_PARITY_SCENE");
+	if (parity.enabled && parityScene != nullptr && *parityScene != '\0') {
+		scenePath = parityScene;
+	} else {
+		scenePath = getAssetPath() + "models/sponza/sponza.gltf";
+	}
+	loadglTFFile(scenePath);
 }
 
 void VulkanExample::setupDescriptors()
@@ -590,7 +608,7 @@ void VulkanExample::buildCommandBuffer()
 	VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 
 	VkClearValue clearValues[2]{};
-	clearValues[0].color = { { 0.25f, 0.25f, 0.25f, 1.0f } };;
+	clearValues[0].color = { { clearColor[0], clearColor[1], clearColor[2], clearColor[3] } };
 	clearValues[1].depthStencil = { 1.0f, 0 };
 
 	VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
@@ -620,12 +638,123 @@ void VulkanExample::buildCommandBuffer()
 	VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 }
 
+void VulkanExample::dumpParityMetadata(std::string filename)
+{
+	ztgfx::JsonWriter out(filename);
+	out.key("frame").value(parity.captureFrame);
+	out.key("width").value((int)width);
+	out.key("height").value((int)height);
+	out.key("time").value(parity.time);
+	out.key("scene").value(scenePath);
+
+	out.key("camera").beginObject();
+	out.key("position").array(&camera.position.x, 3);
+	out.key("rotation").array(&camera.rotation.x, 3);
+	out.key("yfov").value(glm::radians(60.0f));
+	out.key("aspect").value((float)width / (float)height);
+	out.key("near").value(0.1f);
+	out.key("far").value(256.0f);
+	out.key("flipY").value(camera.flipY);
+	out.key("view").array(&camera.matrices.view[0][0], 16);
+	out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+	out.key("viewPos").array(&camera.viewPos.x, 4);
+	out.endObject();
+
+	out.key("uniforms").beginObject();
+	out.key("projection").array(&uniformData.projection[0][0], 16);
+	out.key("view").array(&uniformData.view[0][0], 16);
+	out.key("lightPos").array(&uniformData.lightPos.x, 4);
+	out.key("viewPos").array(&uniformData.viewPos.x, 4);
+	out.endObject();
+
+	auto lightDir = glm::normalize(-glm::vec3(uniformData.lightPos));
+	out.key("light").beginObject();
+	out.key("position").array(&uniformData.lightPos.x, 4);
+	out.key("direction").array(&lightDir.x, 3);
+	out.endObject();
+
+	out.key("materials").beginArray();
+	for (size_t i = 0; i < glTFScene.materials.size(); i++) {
+		const auto& material = glTFScene.materials[i];
+		out.beginObject();
+		out.key("index").value((int)i);
+		out.key("name").value(material.name);
+		out.key("baseColorTexture").value((int)material.baseColorTextureIndex);
+		out.key("normalTexture").value((int)material.normalTextureIndex);
+		out.key("alphaMode").value(material.alphaMode);
+		out.key("alphaCutoff").value(material.alphaCutOff);
+		out.key("doubleSided").value(material.doubleSided);
+		out.endObject();
+	}
+	out.endArray();
+
+	out.key("images").beginArray();
+	for (size_t i = 0; i < glTFScene.images.size(); i++) {
+		out.beginObject();
+		out.key("index").value((int)i);
+		out.key("uri").value(glTFScene.images[i].uri);
+		out.endObject();
+	}
+	out.endArray();
+
+	out.key("formats").beginObject();
+	out.key("color").value((unsigned int)swapChain.colorFormat);
+	out.key("depth").value((unsigned int)depthFormat);
+	out.endObject();
+	out.key("clearColor").array(clearColor, 4);
+
+	out.key("device").beginObject();
+	out.key("name").value(vulkanDevice->properties.deviceName);
+	out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+	out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+	out.key("vendorID").value(vulkanDevice->properties.vendorID);
+	out.key("deviceID").value(vulkanDevice->properties.deviceID);
+	out.endObject();
+	out.close();
+}
+
+void VulkanExample::finishParity()
+{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+	quit = true;
+#else
+	std::exit(0);
+#endif
+}
+
 void VulkanExample::render()
 {
+	if (!prepared)
+		return;
+
+	if (parity.enabled) {
+		camera.flipY = true;
+		ztgfx::Parity::pinCamera(
+			camera, glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(0.0f, -90.0f, 0.0f)
+		);
+		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 256.0f);
+		uniformData.lightPos = glm::vec4(0.0f, 2.5f, 0.0f, 1.0f);
+	}
+
 	VulkanExampleBase::prepareFrame();
 	updateUniformBuffers();
 	buildCommandBuffer();
 	VulkanExampleBase::submitFrame();
+
+	if (parity.enabled) {
+		vkDeviceWaitIdle(device);
+		if (parity.frame == parity.captureFrame) {
+			parity.saveSwapchain(
+				vulkanDevice, queue, swapChain.images[currentImageIndex],
+				swapChain.colorFormat, width, height,
+				parity.path("cpp_scene.ppm"), "scene"
+			);
+			dumpParityMetadata(parity.path("cpp.json"));
+			parity.writeCaptures(parity.path("captures.json"));
+			finishParity();
+		}
+		parity.frame++;
+	}
 }
 
 void VulkanExample::OnUpdateUIOverlay(vks::UIOverlay* overlay)
