@@ -16,6 +16,9 @@ class VulkanExample : public VulkanExampleBase
 {
 public:
 	bool displaySkybox = true;
+	static constexpr float ClearColor[4] = {0.1f, 0.1f, 0.1f, 1.0f};
+	static constexpr float ClearDepth = 1.0f;
+
 	ztgfx::Parity parity;
 	std::string environmentPath;
 	std::string pbrTextureDir;
@@ -1453,10 +1456,10 @@ public:
 		out.key("camera").beginObject();
 		out.key("position").array(&camera.position.x, 3);
 		out.key("rotation").array(&camera.rotation.x, 3);
-		out.key("yfov").value(glm::radians(60.0f));
+		out.key("yfov").value(glm::radians(camera.getFov()));
 		out.key("aspect").value((float)width / (float)height);
-		out.key("near").value(0.1f);
-		out.key("far").value(256.0f);
+		out.key("near").value(camera.getNearClip());
+		out.key("far").value(camera.getFarClip());
 		out.key("flipY").value(camera.flipY);
 		out.key("view").array(&camera.matrices.view[0][0], 16);
 		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
@@ -1490,8 +1493,7 @@ public:
 		out.key("color").value((unsigned int)swapChain.colorFormat);
 		out.key("depth").value((unsigned int)depthFormat);
 		out.endObject();
-		const float clearColor[4] = {0.1f, 0.1f, 0.1f, 1.0f};
-		out.key("clearColor").array(clearColor, 4);
+		out.key("clearColor").array(ClearColor, 4);
 
 		out.key("textures").beginObject();
 		dumpTexture(out, "env", environmentPath,
@@ -1559,8 +1561,8 @@ public:
 		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 
 		VkClearValue clearValues[2]{};
-		clearValues[0].color = { { 0.1f, 0.1f, 0.1f, 1.0f } };
-		clearValues[1].depthStencil = { 1.0f, 0 };
+		clearValues[0].color = { { ClearColor[0], ClearColor[1], ClearColor[2], ClearColor[3] } };
+		clearValues[1].depthStencil = { ClearDepth, 0 };
 
 		VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
 		renderPassBeginInfo.renderPass = renderPass;

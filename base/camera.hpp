@@ -83,6 +83,10 @@ public:
 		return keys.left || keys.right || keys.up || keys.down;
 	}
 
+	float getFov() const {
+		return fov;
+	}
+
 	float getNearClip() const {
 		return znear;
 	}
