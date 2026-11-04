@@ -15,12 +15,14 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
 
 class VulkanExample: public VulkanExampleBase
 {
 public:
 	vkglTF::Model scene;
 	vks::Texture2D colormap;
+	ztgfx::Parity parity;
 
 	struct UniformData {
 		glm::mat4 projection;
@@ -46,6 +48,12 @@ public:
 		camera.setPerspective(60.0f, ((float)width / 3.0f) / (float)height, 0.1f, 512.0f);
 		camera.setRotation(glm::vec3(-40.0f, -90.0f, 0.0f));
 		camera.setTranslation(glm::vec3(0.0f, 0.0f, -2.0f));
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+			uniformData.lightPos = glm::vec4(0.0f, -2.0f, 1.0f, 0.0f);
+		}
 	}
 
 	~VulkanExample()
@@ -266,14 +274,181 @@ public:
 		prepared = true;
 	}
 
+
+	void dumpPipelineState(
+		ztgfx::JsonWriter& out, const char* name, unsigned int lightingModel)
+	{
+		out.key(name).beginObject();
+		out.key("lightingModel").value(lightingModel);
+		out.key("polygonMode").value("FILL");
+		out.key("cullMode").value("NONE");
+		out.key("frontFace").value("CLOCKWISE");
+		out.key("lineWidth").value(1.0f);
+		out.key("depthCompare").value("LESS_OR_EQUAL");
+		out.key("vertexShader").value("specializationconstants/uber.vert.spv");
+		out.key("fragmentShader").value("specializationconstants/uber.frag.spv");
+		out.endObject();
+	}
+
+	void dumpColormapSampler(ztgfx::JsonWriter& out)
+	{
+		out.key("colormap").beginObject();
+		out.key("format").value((unsigned int)VK_FORMAT_R8G8B8A8_UNORM);
+		out.key("width").value((unsigned int)colormap.width);
+		out.key("height").value((unsigned int)colormap.height);
+		out.key("mips").value((unsigned int)colormap.mipLevels);
+		out.key("sampler").beginObject();
+		out.key("magFilter").value("LINEAR");
+		out.key("minFilter").value("LINEAR");
+		out.key("mipmapMode").value("LINEAR");
+		out.key("addressModeU").value("REPEAT");
+		out.key("addressModeV").value("REPEAT");
+		out.key("addressModeW").value("REPEAT");
+		out.key("minLod").value(0.0f);
+		out.key("maxLod").value((float)colormap.mipLevels);
+		out.key("anisotropyEnable").value(
+			vulkanDevice->enabledFeatures.samplerAnisotropy != 0
+		);
+		out.key("maxAnisotropy").value(
+			vulkanDevice->enabledFeatures.samplerAnisotropy
+				? vulkanDevice->properties.limits.maxSamplerAnisotropy
+				: 1.0f
+		);
+		out.key("borderColor").value("FLOAT_OPAQUE_WHITE");
+		out.endObject();
+		out.endObject();
+	}
+
+	void dumpParityMetadata(std::string filename)
+	{
+		const float aspect = ((float)width / 3.0f) / (float)height;
+
+		ztgfx::JsonWriter out(filename);
+		out.key("frame").value(parity.captureFrame);
+		out.key("width").value(width);
+		out.key("height").value(height);
+		out.key("time").value(parity.time);
+
+		out.key("camera").beginObject();
+		out.key("position").array(&camera.position.x, 3);
+		out.key("rotation").array(&camera.rotation.x, 3);
+		out.key("yfov").value(glm::radians(60.0f));
+		out.key("aspect").value(aspect);
+		out.key("near").value(0.1f);
+		out.key("far").value(512.0f);
+		out.key("flipY").value(camera.flipY);
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.endObject();
+
+		glm::vec3 lightPos(0.0f, -2.0f, 1.0f);
+		out.key("light").beginObject();
+		out.key("position").array(&lightPos.x, 3);
+		out.endObject();
+
+		out.key("uniforms").beginObject();
+		out.key("projection").array(&uniformData.projection[0][0], 16);
+		out.key("modelView").array(&uniformData.modelView[0][0], 16);
+		out.key("lightPos").array(&uniformData.lightPos.x, 4);
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value((unsigned int)swapChain.colorFormat);
+		out.key("depth").value((unsigned int)depthFormat);
+		out.endObject();
+		out.key("clearColor").array(defaultClearColor.float32, 4);
+
+		out.key("viewports").beginArray();
+		for (int i = 0; i < 3; i++) {
+			out.beginObject();
+			out.key("x").value(((float)width / 3.0f) * i);
+			out.key("y").value(0.0f);
+			out.key("width").value((float)width / 3.0f);
+			out.key("height").value((float)height);
+			out.key("minDepth").value(0.0f);
+			out.key("maxDepth").value(1.0f);
+			out.endObject();
+		}
+		out.endArray();
+
+		out.key("scissors").beginArray();
+		for (int i = 0; i < 3; i++) {
+			out.beginObject();
+			out.key("x").value(0);
+			out.key("y").value(0);
+			out.key("width").value(width);
+			out.key("height").value(height);
+			out.endObject();
+		}
+		out.endArray();
+
+		out.key("pipelines").beginObject();
+		dumpPipelineState(out, "phong", 0u);
+		dumpPipelineState(out, "toon", 1u);
+		dumpPipelineState(out, "textured", 2u);
+		out.endObject();
+
+		out.key("specConstants").beginObject();
+		out.key("LIGHTING_MODEL").beginArray();
+		out.value(0u).value(1u).value(2u);
+		out.endArray();
+		out.key("PARAM_TOON_DESATURATION").value(0.5f);
+		out.endObject();
+
+		dumpColormapSampler(out);
+
+		out.key("device").beginObject();
+		out.key("name").value(vulkanDevice->properties.deviceName);
+		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+		out.key("vendorID").value(vulkanDevice->properties.vendorID);
+		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		out.endObject();
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared)
 			return;
+		if (parity.enabled) {
+			timer = parity.time;
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(0.0f, 0.0f, -2.0f),
+				glm::vec3(-40.0f, -90.0f, 0.0f)
+			);
+			camera.setPerspective(
+				60.0f, ((float)width / 3.0f) / (float)height, 0.1f, 512.0f
+			);
+		}
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 };
 
