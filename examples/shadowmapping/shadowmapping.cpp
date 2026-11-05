@@ -466,9 +466,7 @@ public:
 		auto lightSpace = lightProjection * lightView;
 
 		ztgfx::JsonWriter out(filename);
-		out.key("frame").value(24);
-		out.key("width").value(width);
-		out.key("height").value(height);
+		ztgfx::Parity::header(out, 24, width, height);
 		out.key("scene").value(sceneNames[sceneIndex]);
 		out.key("scenePath").value("assets/models/vulkanscene_shadow.gltf");
 		out.key("shaderDir").value("shaders/glsl/shadowmapping");
@@ -487,42 +485,15 @@ public:
 		out.key("slope").value(depthBiasSlope);
 		out.endObject();
 
-		out.key("camera").beginObject();
-		out.key("position").array(&camera.position.x, 3);
-		out.key("rotation").array(&camera.rotation.x, 3);
-		out.key("view").array(&camera.matrices.view[0][0], 16);
-		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
-		out.endObject();
-
-		out.key("light").beginObject();
-		out.key("position").array(&lightPos.x, 3);
-		out.key("view").array(&lightView[0][0], 16);
-		out.key("projection").array(&lightProjection[0][0], 16);
-		out.key("lightSpace").array(&lightSpace[0][0], 16);
-		out.endObject();
-
-		out.key("uniforms").beginObject();
-		out.key("scene").beginObject();
-		out.key("projection").array(&uniformDataScene.projection[0][0], 16);
-		out.key("view").array(&uniformDataScene.view[0][0], 16);
-		out.key("model").array(&uniformDataScene.model[0][0], 16);
-		out.key("lightSpace").array(&uniformDataScene.depthBiasMVP[0][0], 16);
-		out.key("lightPos").array(&uniformDataScene.lightPos.x, 4);
-		out.key("zNear").value(uniformDataScene.zNear);
-		out.key("zFar").value(uniformDataScene.zFar);
-		out.endObject();
-		out.key("offscreen").beginObject();
-		out.key("depthMVP").array(&uniformDataOffscreen.depthMVP[0][0], 16);
-		out.endObject();
-		out.endObject();
-
-		out.key("device").beginObject();
-		out.key("name").value(vulkanDevice->properties.deviceName);
-		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
-		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
-		out.key("vendorID").value(vulkanDevice->properties.vendorID);
-		out.key("deviceID").value(vulkanDevice->properties.deviceID);
-		out.endObject();
+		ztgfx::Parity::camera(out, camera);
+		ztgfx::Parity::light(out, lightPos, lightView, lightProjection, lightSpace);
+		ztgfx::Parity::shadowUniforms(
+			out, uniformDataScene.projection, uniformDataScene.view,
+			uniformDataScene.model, uniformDataScene.depthBiasMVP,
+			uniformDataScene.lightPos, uniformDataScene.zNear,
+			uniformDataScene.zFar, uniformDataOffscreen.depthMVP
+		);
+		ztgfx::Parity::device(out, vulkanDevice->properties);
 		out.close();
 	}
 

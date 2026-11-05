@@ -511,26 +511,11 @@ public:
 		);
 
 		ztgfx::JsonWriter out(parity.path("cpp.json"));
-		out.key("frame").value(parity.captureFrame);
-		out.key("width").value(width);
-		out.key("height").value(height);
-		out.key("camera").beginObject();
-		out.key("position").array(&camera.position.x, 3);
-		out.key("rotation").array(&camera.rotation.x, 3);
-		out.key("view").array(&camera.matrices.view[0][0], 16);
-		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
-		out.endObject();
-		out.key("light").beginObject();
-		out.endObject();
-		out.key("uniforms").beginObject();
-		out.endObject();
-		out.key("device").beginObject();
-		out.key("name").value(vulkanDevice->properties.deviceName);
-		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
-		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
-		out.key("vendorID").value(vulkanDevice->properties.vendorID);
-		out.key("deviceID").value(vulkanDevice->properties.deviceID);
-		out.endObject();
+		ztgfx::Parity::header(out, parity.captureFrame, width, height);
+		ztgfx::Parity::camera(out, camera);
+		ztgfx::Parity::light(out);
+		ztgfx::Parity::emptyUniforms(out);
+		ztgfx::Parity::device(out, vulkanDevice->properties);
 		out.close();
 		parity.writeCaptures(parity.path("captures.json"));
 	}
