@@ -8,11 +8,13 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
 
 class VulkanExample : public VulkanExampleBase
 {
 public:
 	vkglTF::Model model;
+	ztgfx::Parity parity;
 
 	struct UniformData {
 		glm::mat4 projection;
@@ -42,6 +44,11 @@ public:
 		camera.setTranslation(glm::vec3(0.0f, 0.0f, -2.0f));
 		// This samples requires a format that supports depth AND stencil, which will be handled by the base class
 		requiresStencil = true;
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+		}
 	}
 
 	~VulkanExample()
@@ -224,14 +231,130 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
+	void dumpStencilOpState(
+		ztgfx::JsonWriter& out, const char* face,
+		const char* compareOp, const char* failOp,
+		const char* depthFailOp, const char* passOp)
+	{
+		out.key(face).beginObject();
+		out.key("compareOp").value(compareOp);
+		out.key("failOp").value(failOp);
+		out.key("depthFailOp").value(depthFailOp);
+		out.key("passOp").value(passOp);
+		out.key("compareMask").value(0xFFu);
+		out.key("writeMask").value(0xFFu);
+		out.key("reference").value(1u);
+		out.endObject();
+	}
+
+	void dumpPipelineState(
+		ztgfx::JsonWriter& out, const char* name, bool depthTest,
+		const char* compareOp, const char* failOp, const char* depthFailOp,
+		const char* passOp)
+	{
+		out.key(name).beginObject();
+		out.key("polygonMode").value("FILL");
+		out.key("cullMode").value("NONE");
+		out.key("frontFace").value("CLOCKWISE");
+		out.key("lineWidth").value(1.0f);
+		out.key("depthTest").value(depthTest);
+		out.key("depthWrite").value(true);
+		out.key("depthCompare").value("LESS_OR_EQUAL");
+		out.key("colorWriteMask").value(0xFu);
+		out.key("blendEnable").value(false);
+		out.key("stencil").beginObject();
+		out.key("testEnable").value(true);
+		dumpStencilOpState(out, "front", compareOp, failOp, depthFailOp, passOp);
+		dumpStencilOpState(out, "back", compareOp, failOp, depthFailOp, passOp);
+		out.endObject();
+		out.endObject();
+	}
+
+	void dumpParityMetadata(std::string filename)
+	{
+		ztgfx::JsonWriter out(filename);
+		ztgfx::Parity::header(out, parity.captureFrame, width, height);
+		ztgfx::Parity::timeValue(out, parity.time);
+
+		ztgfx::Parity::CameraLens lens{
+			glm::radians(60.0f), (float)width / (float)height, 0.1f, 512.0f
+		};
+		ztgfx::Parity::camera(out, camera, &lens);
+		ztgfx::Parity::light(out, glm::vec3(uniformData.lightPos));
+
+		out.key("uniforms").beginObject();
+		out.key("projection").array(&uniformData.projection[0][0], 16);
+		out.key("model").array(&uniformData.model[0][0], 16);
+		out.key("lightPos").array(&uniformData.lightPos.x, 4);
+		out.key("outlineWidth").value(uniformData.outlineWidth);
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value((unsigned int)swapChain.colorFormat);
+		out.key("depth").value((unsigned int)depthFormat);
+		out.endObject();
+
+		out.key("clear").beginObject();
+		out.key("color").array(defaultClearColor.float32, 4);
+		out.key("depth").value(1.0f);
+		out.key("stencil").value(0u);
+		out.endObject();
+
+		out.key("pipelines").beginObject();
+		dumpPipelineState(
+			out, "toon", true, "ALWAYS", "REPLACE", "REPLACE", "REPLACE"
+		);
+		dumpPipelineState(
+			out, "outline", false, "NOT_EQUAL", "KEEP", "KEEP", "REPLACE"
+		);
+		out.endObject();
+
+		ztgfx::Parity::device(out, vulkanDevice->properties);
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared)
 			return;
+		if (parity.enabled) {
+			timer = parity.time;
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(0.0f, 0.0f, -2.0f),
+				glm::vec3(2.5f, -35.0f, 0.0f)
+			);
+			camera.setPerspective(
+				60.0f, (float)width / (float)height, 0.1f, 512.0f
+			);
+		}
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
