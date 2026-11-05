@@ -1301,15 +1301,13 @@ public:
 		auto faces = iblFaceMatrices();
 
 		ztgfx::JsonWriter out(filename);
-		out.key("frame").value(parity.captureFrame);
-		out.key("width").value((int)width);
-		out.key("height").value((int)height);
-		out.key("time").value(parity.time);
+		ztgfx::Parity::header(out, parity.captureFrame, (int)width, (int)height);
+		ztgfx::Parity::timeValue(out, parity.time);
 		out.key("envPath").value(environmentPath);
 
 		out.key("camera").beginObject().endObject();
-		out.key("light").beginObject().endObject();
-		out.key("uniforms").beginObject().endObject();
+		ztgfx::Parity::light(out);
+		ztgfx::Parity::emptyUniforms(out);
 
 		out.key("env").beginObject();
 		out.key("format").value((unsigned int)VK_FORMAT_R16G16B16A16_SFLOAT);
@@ -1380,6 +1378,12 @@ public:
 		out.key("addressModeW").value("CLAMP_TO_EDGE");
 		out.key("minLod").value(0.0f);
 		out.key("maxLod").value((float)textures.environmentCube.mipLevels);
+		out.key("anisotropyEnable").value(
+			vulkanDevice->enabledFeatures.samplerAnisotropy != 0
+		);
+		out.key("maxAnisotropy").value(
+			vulkanDevice->properties.limits.maxSamplerAnisotropy
+		);
 		out.key("borderColor").value("FLOAT_OPAQUE_WHITE");
 		out.endObject();
 
@@ -1388,13 +1392,7 @@ public:
 		out.key("depth").value((unsigned int)depthFormat);
 		out.endObject();
 
-		out.key("device").beginObject();
-		out.key("name").value(vulkanDevice->properties.deviceName);
-		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
-		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
-		out.key("vendorID").value(vulkanDevice->properties.vendorID);
-		out.key("deviceID").value(vulkanDevice->properties.deviceID);
-		out.endObject();
+		ztgfx::Parity::device(out, vulkanDevice->properties);
 		out.close();
 	}
 
@@ -1426,6 +1424,25 @@ public:
 		std::exit(0);
 	}
 
+	void dumpSampler(ztgfx::JsonWriter& out, const char* name,
+		const char* addressMode, float maxLod, bool anisotropyEnable,
+		float maxAnisotropy)
+	{
+		out.key(name).beginObject();
+		out.key("minFilter").value("LINEAR");
+		out.key("magFilter").value("LINEAR");
+		out.key("mipmapMode").value("LINEAR");
+		out.key("addressModeU").value(addressMode);
+		out.key("addressModeV").value(addressMode);
+		out.key("addressModeW").value(addressMode);
+		out.key("minLod").value(0.0f);
+		out.key("maxLod").value(maxLod);
+		out.key("anisotropyEnable").value(anisotropyEnable);
+		out.key("maxAnisotropy").value(maxAnisotropy);
+		out.key("borderColor").value("FLOAT_OPAQUE_WHITE");
+		out.endObject();
+	}
+
 	void dumpTexture(ztgfx::JsonWriter& out, const std::string& name,
 		const std::string& path, VkFormat format, const vks::Texture& texture)
 	{
@@ -1448,24 +1465,15 @@ public:
 		const glm::vec3 camPos = camera.position * -1.0f;
 
 		ztgfx::JsonWriter out(filename);
-		out.key("frame").value(parity.captureFrame);
-		out.key("width").value((int)width);
-		out.key("height").value((int)height);
-		out.key("time").value(parity.time);
+		ztgfx::Parity::header(out, parity.captureFrame, (int)width, (int)height);
+		ztgfx::Parity::timeValue(out, parity.time);
 
-		out.key("camera").beginObject();
-		out.key("position").array(&camera.position.x, 3);
-		out.key("rotation").array(&camera.rotation.x, 3);
-		out.key("yfov").value(glm::radians(camera.getFov()));
-		out.key("aspect").value((float)width / (float)height);
-		out.key("near").value(camera.getNearClip());
-		out.key("far").value(camera.getFarClip());
-		out.key("flipY").value(camera.flipY);
-		out.key("view").array(&camera.matrices.view[0][0], 16);
-		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
-		out.endObject();
-
-		out.key("light").beginObject().endObject();
+		ztgfx::Parity::CameraLens lens{
+			glm::radians(camera.getFov()), (float)width / (float)height,
+			camera.getNearClip(), camera.getFarClip()
+		};
+		ztgfx::Parity::camera(out, camera, &lens);
+		ztgfx::Parity::light(out);
 
 		out.key("uniforms").beginObject();
 		out.key("scene").beginObject();
@@ -1519,13 +1527,23 @@ public:
 			VK_FORMAT_R8_UNORM, textures.roughnessMap);
 		out.endObject();
 
-		out.key("device").beginObject();
-		out.key("name").value(vulkanDevice->properties.deviceName);
-		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
-		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
-		out.key("vendorID").value(vulkanDevice->properties.vendorID);
-		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		const bool anisotropy = vulkanDevice->enabledFeatures.samplerAnisotropy != 0;
+		const float maxAnisotropy =
+			vulkanDevice->properties.limits.maxSamplerAnisotropy;
+		out.key("samplers").beginObject();
+		dumpSampler(out, "env", "CLAMP_TO_EDGE",
+			(float)textures.environmentCube.mipLevels, anisotropy, maxAnisotropy);
+		dumpSampler(out, "pbr", "REPEAT",
+			(float)textures.albedoMap.mipLevels, anisotropy, maxAnisotropy);
+		dumpSampler(out, "irradiance", "CLAMP_TO_EDGE",
+			(float)textures.irradianceCube.mipLevels, false, 1.0f);
+		dumpSampler(out, "prefiltered", "CLAMP_TO_EDGE",
+			(float)textures.prefilteredCube.mipLevels, false, 1.0f);
+		dumpSampler(out, "lut", "CLAMP_TO_EDGE",
+			(float)textures.lutBrdf.mipLevels, false, 1.0f);
 		out.endObject();
+
+		ztgfx::Parity::device(out, vulkanDevice->properties);
 		out.close();
 	}
 
