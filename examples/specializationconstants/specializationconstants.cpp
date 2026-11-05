@@ -324,27 +324,14 @@ public:
 		const float aspect = ((float)width / 3.0f) / (float)height;
 
 		ztgfx::JsonWriter out(filename);
-		out.key("frame").value(parity.captureFrame);
-		out.key("width").value(width);
-		out.key("height").value(height);
-		out.key("time").value(parity.time);
+		ztgfx::Parity::header(out, parity.captureFrame, width, height);
+		ztgfx::Parity::timeValue(out, parity.time);
 
-		out.key("camera").beginObject();
-		out.key("position").array(&camera.position.x, 3);
-		out.key("rotation").array(&camera.rotation.x, 3);
-		out.key("yfov").value(glm::radians(60.0f));
-		out.key("aspect").value(aspect);
-		out.key("near").value(0.1f);
-		out.key("far").value(512.0f);
-		out.key("flipY").value(camera.flipY);
-		out.key("view").array(&camera.matrices.view[0][0], 16);
-		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
-		out.endObject();
-
-		glm::vec3 lightPos(0.0f, -2.0f, 1.0f);
-		out.key("light").beginObject();
-		out.key("position").array(&lightPos.x, 3);
-		out.endObject();
+		ztgfx::Parity::CameraLens lens{
+			glm::radians(60.0f), aspect, 0.1f, 512.0f
+		};
+		ztgfx::Parity::camera(out, camera, &lens);
+		ztgfx::Parity::light(out, glm::vec3(0.0f, -2.0f, 1.0f));
 
 		out.key("uniforms").beginObject();
 		out.key("projection").array(&uniformData.projection[0][0], 16);
@@ -397,13 +384,7 @@ public:
 
 		dumpColormapSampler(out);
 
-		out.key("device").beginObject();
-		out.key("name").value(vulkanDevice->properties.deviceName);
-		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
-		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
-		out.key("vendorID").value(vulkanDevice->properties.vendorID);
-		out.key("deviceID").value(vulkanDevice->properties.deviceID);
-		out.endObject();
+		ztgfx::Parity::device(out, vulkanDevice->properties);
 		out.close();
 	}
 
