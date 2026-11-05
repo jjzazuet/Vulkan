@@ -659,23 +659,13 @@ public:
 	void dumpParityMetadata(std::string filename)
 	{
 		ztgfx::JsonWriter out(filename);
-		out.key("frame").value(parity.captureFrame);
-		out.key("width").value(width);
-		out.key("height").value(height);
-		out.key("time").value(parity.time);
+		ztgfx::Parity::header(out, parity.captureFrame, width, height);
+		ztgfx::Parity::timeValue(out, parity.time);
 
-		out.key("camera").beginObject();
-		out.key("position").array(&camera.position.x, 3);
-		out.key("rotation").array(&camera.rotation.x, 3);
-		out.key("yfov").value(glm::radians(60.0f));
-		out.key("aspect").value((float)width / (float)height);
-		out.key("near").value(0.1f);
-		out.key("far").value(256.0f);
-		out.key("flipY").value(camera.flipY);
-		out.key("view").array(&camera.matrices.view[0][0], 16);
-		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
-		out.endObject();
-
+		ztgfx::Parity::CameraLens lens{
+			glm::radians(60.0f), (float)width / (float)height, 0.1f, 256.0f
+		};
+		ztgfx::Parity::camera(out, camera, &lens);
 		out.key("light").beginObject();
 		out.key("position").beginArray();
 		out.value(0.0f).value(0.0f).value(0.0f);
@@ -733,13 +723,7 @@ public:
 		out.key("paused").value(paused);
 		out.key("debugDisplay").value(debugDisplay);
 
-		out.key("device").beginObject();
-		out.key("name").value(vulkanDevice->properties.deviceName);
-		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
-		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
-		out.key("vendorID").value(vulkanDevice->properties.vendorID);
-		out.key("deviceID").value(vulkanDevice->properties.deviceID);
-		out.endObject();
+		ztgfx::Parity::device(out, vulkanDevice->properties);
 		out.close();
 	}
 
