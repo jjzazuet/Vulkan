@@ -1301,15 +1301,13 @@ public:
 		auto faces = iblFaceMatrices();
 
 		ztgfx::JsonWriter out(filename);
-		out.key("frame").value(parity.captureFrame);
-		out.key("width").value((int)width);
-		out.key("height").value((int)height);
-		out.key("time").value(parity.time);
+		ztgfx::Parity::header(out, parity.captureFrame, (int)width, (int)height);
+		ztgfx::Parity::timeValue(out, parity.time);
 		out.key("envPath").value(environmentPath);
 
 		out.key("camera").beginObject().endObject();
-		out.key("light").beginObject().endObject();
-		out.key("uniforms").beginObject().endObject();
+		ztgfx::Parity::light(out);
+		ztgfx::Parity::emptyUniforms(out);
 
 		out.key("env").beginObject();
 		out.key("format").value((unsigned int)VK_FORMAT_R16G16B16A16_SFLOAT);
@@ -1394,13 +1392,7 @@ public:
 		out.key("depth").value((unsigned int)depthFormat);
 		out.endObject();
 
-		out.key("device").beginObject();
-		out.key("name").value(vulkanDevice->properties.deviceName);
-		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
-		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
-		out.key("vendorID").value(vulkanDevice->properties.vendorID);
-		out.key("deviceID").value(vulkanDevice->properties.deviceID);
-		out.endObject();
+		ztgfx::Parity::device(out, vulkanDevice->properties);
 		out.close();
 	}
 
@@ -1473,24 +1465,15 @@ public:
 		const glm::vec3 camPos = camera.position * -1.0f;
 
 		ztgfx::JsonWriter out(filename);
-		out.key("frame").value(parity.captureFrame);
-		out.key("width").value((int)width);
-		out.key("height").value((int)height);
-		out.key("time").value(parity.time);
+		ztgfx::Parity::header(out, parity.captureFrame, (int)width, (int)height);
+		ztgfx::Parity::timeValue(out, parity.time);
 
-		out.key("camera").beginObject();
-		out.key("position").array(&camera.position.x, 3);
-		out.key("rotation").array(&camera.rotation.x, 3);
-		out.key("yfov").value(glm::radians(camera.getFov()));
-		out.key("aspect").value((float)width / (float)height);
-		out.key("near").value(camera.getNearClip());
-		out.key("far").value(camera.getFarClip());
-		out.key("flipY").value(camera.flipY);
-		out.key("view").array(&camera.matrices.view[0][0], 16);
-		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
-		out.endObject();
-
-		out.key("light").beginObject().endObject();
+		ztgfx::Parity::CameraLens lens{
+			glm::radians(camera.getFov()), (float)width / (float)height,
+			camera.getNearClip(), camera.getFarClip()
+		};
+		ztgfx::Parity::camera(out, camera, &lens);
+		ztgfx::Parity::light(out);
 
 		out.key("uniforms").beginObject();
 		out.key("scene").beginObject();
@@ -1560,13 +1543,7 @@ public:
 			(float)textures.lutBrdf.mipLevels, false, 1.0f);
 		out.endObject();
 
-		out.key("device").beginObject();
-		out.key("name").value(vulkanDevice->properties.deviceName);
-		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
-		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
-		out.key("vendorID").value(vulkanDevice->properties.vendorID);
-		out.key("deviceID").value(vulkanDevice->properties.deviceID);
-		out.endObject();
+		ztgfx::Parity::device(out, vulkanDevice->properties);
 		out.close();
 	}
 
