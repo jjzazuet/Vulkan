@@ -201,7 +201,10 @@ struct Parity
 	}
 
 	template <typename Camera>
-	static void camera(JsonWriter& out, const Camera& camera, const CameraLens* lens = nullptr)
+	static void camera(
+		JsonWriter& out, const Camera& camera,
+		const CameraLens* lens = nullptr, const float* viewPos = nullptr
+	)
 	{
 		out.key("camera").beginObject();
 		out.key("position").array(&camera.position.x, 3);
@@ -216,6 +219,10 @@ struct Parity
 		}
 		out.key("view").array(&camera.matrices.view[0][0], 16);
 		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		if (viewPos != nullptr)
+		{
+			out.key("viewPos").array(viewPos, 4);
+		}
 		out.endObject();
 	}
 
