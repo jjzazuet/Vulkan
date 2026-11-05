@@ -200,10 +200,10 @@ struct Parity
 		out.key("time").value(time);
 	}
 
-	template <typename Camera, typename Vec4>
+	template <typename Camera>
 	static void camera(
 		JsonWriter& out, const Camera& camera,
-		const CameraLens* lens = nullptr, const Vec4* viewPos = nullptr
+		const CameraLens* lens = nullptr, const float* viewPos = nullptr
 	)
 	{
 		out.key("camera").beginObject();
@@ -221,7 +221,7 @@ struct Parity
 		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
 		if (viewPos != nullptr)
 		{
-			out.key("viewPos").array(&viewPos->x, 4);
+			out.key("viewPos").array(viewPos, 4);
 		}
 		out.endObject();
 	}

@@ -648,7 +648,7 @@ void VulkanExample::dumpParityMetadata(std::string filename)
 	ztgfx::Parity::CameraLens lens{
 		glm::radians(60.0f), (float)width / (float)height, 0.1f, 256.0f
 	};
-	ztgfx::Parity::camera(out, camera, &lens, &camera.viewPos);
+	ztgfx::Parity::camera(out, camera, &lens, &camera.viewPos.x);
 
 	out.key("uniforms").beginObject();
 	out.key("projection").array(&uniformData.projection[0][0], 16);
