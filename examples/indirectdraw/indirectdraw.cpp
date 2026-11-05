@@ -21,6 +21,8 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
+#include <fstream>
 
 // Number of instances per object
 #if defined(__ANDROID__)
@@ -36,6 +38,7 @@
 class VulkanExample : public VulkanExampleBase
 {
 public:
+	ztgfx::Parity parity;
 	struct {
 		vks::Texture2DArray plants;
 		vks::Texture2D ground;
@@ -92,6 +95,11 @@ public:
 		camera.setRotation(glm::vec3(-12.0f, 159.0f, 0.0f));
 		camera.setTranslation(glm::vec3(0.4f, 1.25f, 0.0f));
 		camera.movementSpeed = 5.0f;
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+		}
 	}
 
 	~VulkanExample()
@@ -324,7 +332,9 @@ public:
 		std::vector<InstanceData> instanceData;
 		instanceData.resize(objectCount);
 
-		std::default_random_engine rndEngine(benchmark.active ? 0 : (unsigned)time(nullptr));
+		std::default_random_engine rndEngine(
+			(parity.enabled || benchmark.active) ? 0 : (unsigned)time(nullptr)
+		);
 		std::uniform_real_distribution<float> uniformDist(0.0f, 1.0f);
 
 		for (uint32_t i = 0; i < objectCount; i++) {
@@ -334,6 +344,14 @@ public:
 			instanceData[i].pos = glm::vec3(sin(phi) * cos(theta), 0.0f, cos(phi)) * PLANT_RADIUS;
 			instanceData[i].scale = 1.0f + uniformDist(rndEngine) * 2.0f;
 			instanceData[i].texIndex = i / OBJECT_INSTANCE_COUNT;
+		}
+
+		if (parity.enabled) {
+			std::ofstream out(parity.path("instances.bin"), std::ios::binary);
+			out.write(
+				reinterpret_cast<const char*>(instanceData.data()),
+				static_cast<std::streamsize>(instanceData.size() * sizeof(InstanceData))
+			);
 		}
 
 		vks::Buffer stagingBuffer;
@@ -452,15 +470,156 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
+	void dumpPipelineState(
+		ztgfx::JsonWriter& out, const char* name, const char* cullMode,
+		bool depthTest, bool depthWrite,
+		const char* vertexShader, const char* fragmentShader)
+	{
+		out.key(name).beginObject();
+		out.key("polygonMode").value("FILL");
+		out.key("cullMode").value(cullMode);
+		out.key("frontFace").value("COUNTER_CLOCKWISE");
+		out.key("lineWidth").value(1.0f);
+		out.key("depthTest").value(depthTest);
+		out.key("depthWrite").value(depthWrite);
+		out.key("depthCompare").value("LESS_OR_EQUAL");
+		out.key("colorWriteMask").value(0xFu);
+		out.key("blendEnable").value(false);
+		out.key("vertexShader").value(vertexShader);
+		out.key("fragmentShader").value(fragmentShader);
+		out.endObject();
+	}
+
+	void dumpParityMetadata(std::string filename)
+	{
+		const float clearColor[4] = { 0.18f, 0.27f, 0.5f, 0.0f };
+
+		ztgfx::JsonWriter out(filename);
+		ztgfx::Parity::header(out, parity.captureFrame, width, height);
+		ztgfx::Parity::timeValue(out, parity.time);
+
+		ztgfx::Parity::CameraLens lens{
+			glm::radians(60.0f), (float)width / (float)height, 0.1f, 512.0f
+		};
+		ztgfx::Parity::camera(out, camera, &lens);
+		ztgfx::Parity::light(out, glm::vec3(0.0f, -5.0f, 0.0f));
+
+		out.key("uniforms").beginObject();
+		out.key("projection").array(&uniformData.projection[0][0], 16);
+		out.key("view").array(&uniformData.view[0][0], 16);
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value((unsigned int)swapChain.colorFormat);
+		out.key("depth").value((unsigned int)depthFormat);
+		out.endObject();
+
+		out.key("clear").beginObject();
+		out.key("color").array(clearColor, 4);
+		out.key("depth").value(1.0f);
+		out.key("stencil").value(0u);
+		out.endObject();
+
+		out.key("textures").beginObject();
+		out.key("plants").beginObject();
+		out.key("width").value((unsigned int)textures.plants.width);
+		out.key("height").value((unsigned int)textures.plants.height);
+		out.key("layers").value((unsigned int)textures.plants.layerCount);
+		out.key("mips").value((unsigned int)textures.plants.mipLevels);
+		out.key("format").value((unsigned int)VK_FORMAT_R8G8B8A8_UNORM);
+		out.endObject();
+		out.key("ground").beginObject();
+		out.key("width").value((unsigned int)textures.ground.width);
+		out.key("height").value((unsigned int)textures.ground.height);
+		out.key("mips").value((unsigned int)textures.ground.mipLevels);
+		out.key("format").value((unsigned int)VK_FORMAT_R8G8B8A8_UNORM);
+		out.endObject();
+		out.endObject();
+
+		out.key("pipelines").beginObject();
+		dumpPipelineState(
+			out, "plants", "NONE", true, true,
+			"indirectdraw/indirectdraw.vert.spv",
+			"indirectdraw/indirectdraw.frag.spv"
+		);
+		dumpPipelineState(
+			out, "ground", "BACK", true, true,
+			"indirectdraw/ground.vert.spv",
+			"indirectdraw/ground.frag.spv"
+		);
+		dumpPipelineState(
+			out, "skysphere", "FRONT", true, false,
+			"indirectdraw/skysphere.vert.spv",
+			"indirectdraw/skysphere.frag.spv"
+		);
+		out.endObject();
+
+		out.key("indirect").beginObject();
+		out.key("drawCount").value((unsigned int)indirectDrawCount);
+		out.key("stride").value((unsigned int)sizeof(VkDrawIndexedIndirectCommand));
+		out.key("indexed").value(true);
+		out.key("instanceCount").value((unsigned int)OBJECT_INSTANCE_COUNT);
+		out.key("instanceStride").value((unsigned int)sizeof(InstanceData));
+		out.key("commands").beginArray();
+		for (const auto& command : indirectCommands) {
+			out.beginObject();
+			out.key("indexCount").value(command.indexCount);
+			out.key("instanceCount").value(command.instanceCount);
+			out.key("firstIndex").value(command.firstIndex);
+			out.key("vertexOffset").value((int)command.vertexOffset);
+			out.key("firstInstance").value(command.firstInstance);
+			out.endObject();
+		}
+		out.endArray();
+		out.endObject();
+
+		ztgfx::Parity::device(out, vulkanDevice->properties);
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared) {
 			return;
 		}
+		if (parity.enabled) {
+			timer = parity.time;
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(0.4f, 1.25f, 0.0f),
+				glm::vec3(-12.0f, 159.0f, 0.0f)
+			);
+			camera.setPerspective(
+				60.0f, (float)width / (float)height, 0.1f, 512.0f
+			);
+		}
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
