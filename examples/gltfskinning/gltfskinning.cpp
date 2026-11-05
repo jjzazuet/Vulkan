@@ -987,56 +987,20 @@ void VulkanExample::buildCommandBuffer()
 void VulkanExample::dumpParityMetadata(std::string filename)
 {
 	ztgfx::JsonWriter out(filename);
-	out.key("frame").value(parity.captureFrame);
-	out.key("width").value(width);
-	out.key("height").value(height);
-	out.key("time").value(parity.time);
+	ztgfx::Parity::header(out, parity.captureFrame, width, height);
+	ztgfx::Parity::timeValue(out, parity.time);
 
-	out.key("camera").beginObject();
-	out.key("position").array(&camera.position.x, 3);
-	out.key("rotation").array(&camera.rotation.x, 3);
-	out.key("yfov").value(glm::radians(cameraFov));
-	out.key("aspect").value((float) width / (float) height);
-	out.key("near").value(cameraNear);
-	out.key("far").value(cameraFar);
-	out.key("flipY").value(camera.flipY);
-	out.key("view").array(&camera.matrices.view[0][0], 16);
-	out.key("projection").array(&camera.matrices.perspective[0][0], 16);
-	out.endObject();
-
-	out.key("light").beginObject();
-	out.key("position").array(&uniformData.lightPos.x, 3);
-	out.endObject();
-
-	out.key("uniforms").beginObject();
-	out.key("scene").beginObject();
-	out.key("projection").array(&uniformData.projection[0][0], 16);
-	out.key("view").array(&uniformData.model[0][0], 16);
-	out.key("lightPos").array(&uniformData.lightPos.x, 4);
-	out.endObject();
-	out.endObject();
-
-	out.key("skins").beginArray();
-	for (const auto &skin : glTFModel.skins) {
-		out.beginObject();
-		out.key("name").value(skin.name);
-		out.key("jointCount").value(static_cast<unsigned int>(skin.jointMatrices.size()));
-		out.key("joints").beginArray();
-		for (const auto &matrix : skin.jointMatrices) {
-			out.array(&matrix[0][0], 16);
-		}
-		out.endArray();
-		out.endObject();
-	}
-	out.endArray();
-
-	out.key("device").beginObject();
-	out.key("name").value(vulkanDevice->properties.deviceName);
-	out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
-	out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
-	out.key("vendorID").value(vulkanDevice->properties.vendorID);
-	out.key("deviceID").value(vulkanDevice->properties.deviceID);
-	out.endObject();
+	ztgfx::Parity::CameraLens lens{
+		glm::radians(cameraFov), (float) width / (float) height,
+		cameraNear, cameraFar
+	};
+	ztgfx::Parity::camera(out, camera, &lens);
+	ztgfx::Parity::light(out, uniformData.lightPos);
+	ztgfx::Parity::sceneUniforms(
+		out, uniformData.projection, uniformData.model, uniformData.lightPos
+	);
+	ztgfx::Parity::skins(out, glTFModel.skins);
+	ztgfx::Parity::device(out, vulkanDevice->properties);
 	out.close();
 }
 

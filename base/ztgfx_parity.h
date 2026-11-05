@@ -180,6 +180,150 @@ private:
 
 struct Parity
 {
+	struct CameraLens
+	{
+		float yfov;
+		float aspect;
+		float nearClip;
+		float farClip;
+	};
+
+	static void header(JsonWriter& out, int frame, int width, int height)
+	{
+		out.key("frame").value(frame);
+		out.key("width").value(width);
+		out.key("height").value(height);
+	}
+
+	static void timeValue(JsonWriter& out, float time)
+	{
+		out.key("time").value(time);
+	}
+
+	template <typename Camera>
+	static void camera(JsonWriter& out, const Camera& camera, const CameraLens* lens = nullptr)
+	{
+		out.key("camera").beginObject();
+		out.key("position").array(&camera.position.x, 3);
+		out.key("rotation").array(&camera.rotation.x, 3);
+		if (lens != nullptr)
+		{
+			out.key("yfov").value(lens->yfov);
+			out.key("aspect").value(lens->aspect);
+			out.key("near").value(lens->nearClip);
+			out.key("far").value(lens->farClip);
+			out.key("flipY").value(camera.flipY);
+		}
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.endObject();
+	}
+
+	static void device(JsonWriter& out, const VkPhysicalDeviceProperties& properties)
+	{
+		out.key("device").beginObject();
+		out.key("name").value(properties.deviceName);
+		out.key("driverVersion").value(properties.driverVersion);
+		out.key("apiVersion").value(properties.apiVersion);
+		out.key("vendorID").value(properties.vendorID);
+		out.key("deviceID").value(properties.deviceID);
+		out.endObject();
+	}
+
+	static void light(JsonWriter& out)
+	{
+		out.key("light").beginObject();
+		out.endObject();
+	}
+
+	template <typename Vec3>
+	static void light(JsonWriter& out, const Vec3& position)
+	{
+		out.key("light").beginObject();
+		out.key("position").array(&position.x, 3);
+		out.endObject();
+	}
+
+	template <typename Vec3, typename Mat4>
+	static void light(
+		JsonWriter& out, const Vec3& position,
+		const Mat4& view, const Mat4& projection, const Mat4& lightSpace
+	)
+	{
+		out.key("light").beginObject();
+		out.key("position").array(&position.x, 3);
+		out.key("view").array(&view[0][0], 16);
+		out.key("projection").array(&projection[0][0], 16);
+		out.key("lightSpace").array(&lightSpace[0][0], 16);
+		out.endObject();
+	}
+
+	static void emptyUniforms(JsonWriter& out)
+	{
+		out.key("uniforms").beginObject();
+		out.endObject();
+	}
+
+	template <typename Mat4, typename Vec4>
+	static void sceneUniforms(
+		JsonWriter& out, const Mat4& projection, const Mat4& view,
+		const Vec4& lightPos
+	)
+	{
+		out.key("uniforms").beginObject();
+		out.key("scene").beginObject();
+		out.key("projection").array(&projection[0][0], 16);
+		out.key("view").array(&view[0][0], 16);
+		out.key("lightPos").array(&lightPos.x, 4);
+		out.endObject();
+		out.endObject();
+	}
+
+	template <typename Mat4, typename Vec4>
+	static void shadowUniforms(
+		JsonWriter& out, const Mat4& projection, const Mat4& view,
+		const Mat4& model, const Mat4& lightSpace, const Vec4& lightPos,
+		float zNear, float zFar, const Mat4& depthMvp
+	)
+	{
+		out.key("uniforms").beginObject();
+		out.key("scene").beginObject();
+		out.key("projection").array(&projection[0][0], 16);
+		out.key("view").array(&view[0][0], 16);
+		out.key("model").array(&model[0][0], 16);
+		out.key("lightSpace").array(&lightSpace[0][0], 16);
+		out.key("lightPos").array(&lightPos.x, 4);
+		out.key("zNear").value(zNear);
+		out.key("zFar").value(zFar);
+		out.endObject();
+		out.key("offscreen").beginObject();
+		out.key("depthMVP").array(&depthMvp[0][0], 16);
+		out.endObject();
+		out.endObject();
+	}
+
+	template <typename Skins>
+	static void skins(JsonWriter& out, const Skins& skins)
+	{
+		out.key("skins").beginArray();
+		for (const auto& skin : skins)
+		{
+			out.beginObject();
+			out.key("name").value(skin.name);
+			out.key("jointCount").value(
+				static_cast<unsigned int>(skin.jointMatrices.size())
+			);
+			out.key("joints").beginArray();
+			for (const auto& matrix : skin.jointMatrices)
+			{
+				out.array(&matrix[0][0], 16);
+			}
+			out.endArray();
+			out.endObject();
+		}
+		out.endArray();
+	}
+
 	struct Capture
 	{
 		std::string name;
