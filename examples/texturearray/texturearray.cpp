@@ -10,6 +10,7 @@
 */
 
 #include "vulkanexamplebase.h"
+#include "ztgfx_parity.h"
 #include <ktx.h>
 #include <ktxvulkan.h>
 
@@ -24,6 +25,7 @@ struct Vertex {
 class VulkanExample : public VulkanExampleBase
 {
 public:
+	ztgfx::Parity parity;
 	// Number of array layers in texture array
 	// Also used as instance count
 	uint32_t layerCount{ 0 };
@@ -64,6 +66,11 @@ public:
 		camera.setPosition(glm::vec3(0.0f, 0.0f, -7.5f));
 		camera.setRotation(glm::vec3(-35.0f, 0.0f, 0.0f));
 		camera.setPerspective(45.0f, (float)width / (float)height, 0.1f, 256.0f);
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+		}
 	}
 
 	~VulkanExample()
@@ -432,6 +439,11 @@ public:
 			// Instance texture array index
 			uniformData.instance[i].arrayIndex = (float)i;
 		}
+		// Keep the unused slots deterministic in parity metadata.
+		for (uint32_t i = layerCount; i < MAX_LAYERS; i++) {
+			uniformData.instance[i].model = glm::mat4(1.0f);
+			uniformData.instance[i].arrayIndex = 0.0f;
+		}
 
 		for (auto& buffer : uniformBuffers) {
 			const size_t uboSize = sizeof(uniformData.matrices) + (MAX_LAYERS * sizeof(PerInstanceData));
@@ -503,14 +515,149 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
+
+	void dumpParityMetadata(std::string filename)
+	{
+		ztgfx::JsonWriter out(filename);
+		out.key("frame").value(parity.captureFrame);
+		out.key("width").value(width);
+		out.key("height").value(height);
+		out.key("time").value(parity.time);
+
+		out.key("camera").beginObject();
+		out.key("position").array(&camera.position.x, 3);
+		out.key("rotation").array(&camera.rotation.x, 3);
+		out.key("yfov").value(glm::radians(45.0f));
+		out.key("aspect").value((float)width / (float)height);
+		out.key("near").value(0.1f);
+		out.key("far").value(256.0f);
+		out.key("flipY").value(camera.flipY);
+		out.key("view").array(&camera.matrices.view[0][0], 16);
+		out.key("projection").array(&camera.matrices.perspective[0][0], 16);
+		out.endObject();
+
+		out.key("light").beginObject();
+		out.key("position").beginArray();
+		out.value(0.0f).value(0.0f).value(0.0f);
+		out.endArray();
+		out.endObject();
+
+		out.key("layerCount").value((unsigned int)layerCount);
+		out.key("vertexCount").value((unsigned int)(vertexBuffer.size / sizeof(Vertex)));
+		out.key("indexCount").value((unsigned int)indexCount);
+
+		out.key("uniforms").beginObject();
+		out.key("projection").array(&uniformData.matrices.projection[0][0], 16);
+		out.key("view").array(&uniformData.matrices.view[0][0], 16);
+		out.key("model").beginArray();
+		for (uint32_t i = 0; i < MAX_LAYERS; i++) {
+			out.beginObject();
+			out.key("data").array(&uniformData.instance[i].model[0][0], 16);
+			out.endObject();
+		}
+		out.endArray();
+		out.key("arrayIndex").beginArray();
+		for (uint32_t i = 0; i < MAX_LAYERS; i++) {
+			out.value(uniformData.instance[i].arrayIndex);
+		}
+		out.endArray();
+		out.endObject();
+
+		out.key("texture").beginObject();
+		out.key("width").value((unsigned int)textureArray.width);
+		out.key("height").value((unsigned int)textureArray.height);
+		out.key("layers").value((unsigned int)layerCount);
+		out.key("mips").value(1u);
+		out.key("format").value((unsigned int)VK_FORMAT_R8G8B8A8_UNORM);
+		out.endObject();
+
+		out.key("sampler").beginObject();
+		out.key("magFilter").value("LINEAR");
+		out.key("minFilter").value("LINEAR");
+		out.key("mipmapMode").value("LINEAR");
+		out.key("addressModeU").value("CLAMP_TO_EDGE");
+		out.key("addressModeV").value("CLAMP_TO_EDGE");
+		out.key("addressModeW").value("CLAMP_TO_EDGE");
+		out.key("minLod").value(0.0f);
+		out.key("maxLod").value(0.0f);
+		out.key("anisotropyEnable").value(false);
+		out.key("maxAnisotropy").value(8.0f);
+		out.key("borderColor").value("FLOAT_OPAQUE_WHITE");
+		out.endObject();
+
+		out.key("pipelines").beginObject();
+		out.key("instancing").beginObject();
+		out.key("polygonMode").value("FILL");
+		out.key("cullMode").value("NONE");
+		out.key("frontFace").value("COUNTER_CLOCKWISE");
+		out.key("lineWidth").value(1.0f);
+		out.key("depthTest").value(true);
+		out.key("depthWrite").value(true);
+		out.key("depthCompare").value("LESS_OR_EQUAL");
+		out.key("blendEnable").value(false);
+		out.key("vertexShader").value("texturearray/instancing.vert.spv");
+		out.key("fragmentShader").value("texturearray/instancing.frag.spv");
+		out.endObject();
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value((unsigned int)swapChain.colorFormat);
+		out.key("depth").value((unsigned int)depthFormat);
+		out.endObject();
+		out.key("clearColor").array(defaultClearColor.float32, 4);
+
+		out.key("device").beginObject();
+		out.key("name").value(vulkanDevice->properties.deviceName);
+		out.key("driverVersion").value(vulkanDevice->properties.driverVersion);
+		out.key("apiVersion").value(vulkanDevice->properties.apiVersion);
+		out.key("vendorID").value(vulkanDevice->properties.vendorID);
+		out.key("deviceID").value(vulkanDevice->properties.deviceID);
+		out.endObject();
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared)
 			return;
+		if (parity.enabled) {
+			timer = parity.time;
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(0.0f, 0.0f, -7.5f),
+				glm::vec3(-35.0f, 0.0f, 0.0f)
+			);
+			camera.setPerspective(
+				45.0f, (float)width / (float)height, 0.1f, 256.0f
+			);
+		}
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 };
 
