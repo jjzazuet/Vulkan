@@ -8,6 +8,7 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
 
 // Offscreen frame buffer properties
 #define FB_DIM 512
@@ -17,6 +18,8 @@ class VulkanExample : public VulkanExampleBase
 {
 public:
 	bool debugDisplay = false;
+	ztgfx::Parity parity;
+	VkFormat offscreenDepthFormat = VK_FORMAT_UNDEFINED;
 
 	struct {
 		vkglTF::Model example;
@@ -90,6 +93,14 @@ public:
 		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 256.0f);
 		// The scene shader uses a clipping plane, so this feature has to be enabled
 		enabledFeatures.shaderClipDistance = VK_TRUE;
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+			debugDisplay = false;
+			paused = true;
+			modelRotation = glm::vec3(0.0f);
+		}
 	}
 
 	~VulkanExample()
@@ -131,6 +142,7 @@ public:
 		VkFormat fbDepthFormat;
 		VkBool32 validDepthFormat = vks::tools::getSupportedDepthFormat(physicalDevice, &fbDepthFormat);
 		assert(validDepthFormat);
+		offscreenDepthFormat = fbDepthFormat;
 
 		// Color attachment
 		VkImageCreateInfo image = vks::initializers::imageCreateInfo();
@@ -579,14 +591,194 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
+
+	void dumpSampler(ztgfx::JsonWriter& out, const char* name)
+	{
+		out.key(name).beginObject();
+		out.key("magFilter").value("LINEAR");
+		out.key("minFilter").value("LINEAR");
+		out.key("mipmapMode").value("LINEAR");
+		out.key("addressModeU").value("CLAMP_TO_EDGE");
+		out.key("addressModeV").value("CLAMP_TO_EDGE");
+		out.key("addressModeW").value("CLAMP_TO_EDGE");
+		out.key("minLod").value(0.0f);
+		out.key("maxLod").value(1.0f);
+		out.key("anisotropyEnable").value(false);
+		out.key("maxAnisotropy").value(1.0f);
+		out.key("borderColor").value("FLOAT_OPAQUE_WHITE");
+		out.endObject();
+	}
+
+	void dumpUbo(ztgfx::JsonWriter& out, const char* name)
+	{
+		out.key(name).beginObject();
+		out.key("projection").array(&uniformData.projection[0][0], 16);
+		out.key("view").array(&uniformData.view[0][0], 16);
+		if (std::string(name) == "model") {
+			glm::mat4 model(1.0f);
+			model = glm::rotate(model, glm::radians(modelRotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+			model = glm::translate(model, modelPosition);
+			out.key("model").array(&model[0][0], 16);
+			out.key("lightPos").array(&uniformData.lightPos.x, 4);
+		} else if (std::string(name) == "mirror") {
+			out.key("model").beginArray();
+			for (int i = 0; i < 16; i++) {
+				out.value(i % 5 == 0 ? 1.0f : 0.0f);
+			}
+			out.endArray();
+			out.key("lightPos").array(&uniformData.lightPos.x, 4);
+		} else {
+			glm::mat4 model(1.0f);
+			model = glm::rotate(model, glm::radians(modelRotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+			model = glm::scale(model, glm::vec3(1.0f, -1.0f, 1.0f));
+			model = glm::translate(model, modelPosition);
+			out.key("model").array(&model[0][0], 16);
+			out.key("lightPos").array(&uniformData.lightPos.x, 4);
+		}
+		out.endObject();
+	}
+
+	void dumpPipelineState(
+		ztgfx::JsonWriter& out, const char* name,
+		const char* vertexShader, const char* fragmentShader, const char* cullMode)
+	{
+		out.key(name).beginObject();
+		out.key("polygonMode").value("FILL");
+		out.key("cullMode").value(cullMode);
+		out.key("frontFace").value("COUNTER_CLOCKWISE");
+		out.key("lineWidth").value(1.0f);
+		out.key("depthTest").value(true);
+		out.key("depthWrite").value(true);
+		out.key("depthCompare").value("LESS_OR_EQUAL");
+		out.key("blendEnable").value(false);
+		out.key("vertexShader").value(vertexShader);
+		out.key("fragmentShader").value(fragmentShader);
+		out.endObject();
+	}
+
+	void dumpParityMetadata(std::string filename)
+	{
+		ztgfx::JsonWriter out(filename);
+		ztgfx::Parity::header(out, parity.captureFrame, width, height);
+		ztgfx::Parity::timeValue(out, parity.time);
+
+		ztgfx::Parity::CameraLens lens{
+			glm::radians(60.0f), (float)width / (float)height, 0.1f, 256.0f
+		};
+		ztgfx::Parity::camera(out, camera, &lens);
+		out.key("light").beginObject();
+		out.key("position").beginArray();
+		out.value(0.0f).value(0.0f).value(0.0f);
+		out.endArray();
+		out.endObject();
+
+		out.key("uniforms").beginObject();
+		dumpUbo(out, "model");
+		dumpUbo(out, "mirror");
+		dumpUbo(out, "offscreen");
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value((unsigned int)swapChain.colorFormat);
+		out.key("offscreenColor").value((unsigned int)FB_COLOR_FORMAT);
+		out.key("depth").value((unsigned int)depthFormat);
+		out.key("offscreenDepth").value((unsigned int)offscreenDepthFormat);
+		out.endObject();
+
+		out.key("clears").beginObject();
+		out.key("scene").array(defaultClearColor.float32, 4);
+		out.key("offscreen").beginArray();
+		out.value(0.0f).value(0.0f).value(0.0f).value(0.0f);
+		out.endArray();
+		out.endObject();
+
+		out.key("textures").beginObject();
+		out.key("offscreenColor").beginObject();
+		out.key("width").value(FB_DIM);
+		out.key("height").value(FB_DIM);
+		out.key("format").value((unsigned int)FB_COLOR_FORMAT);
+		out.endObject();
+		out.endObject();
+
+		out.key("samplers").beginObject();
+		dumpSampler(out, "offscreen");
+		out.endObject();
+
+		out.key("pipelines").beginObject();
+		dumpPipelineState(out, "mirror", "offscreen/mirror.vert.spv",
+			"offscreen/mirror.frag.spv", "NONE");
+		dumpPipelineState(out, "shaded", "offscreen/phong.vert.spv",
+			"offscreen/phong.frag.spv", "BACK");
+		dumpPipelineState(out, "shadedOffscreen", "offscreen/phong.vert.spv",
+			"offscreen/phong.frag.spv", "FRONT");
+		out.endObject();
+
+		out.key("features").beginObject();
+		out.key("shaderClipDistance").value(true);
+		out.endObject();
+
+		out.key("modelRotation").beginArray();
+		out.value(modelRotation.x).value(modelRotation.y).value(modelRotation.z);
+		out.endArray();
+		out.key("paused").value(paused);
+		out.key("debugDisplay").value(debugDisplay);
+
+		ztgfx::Parity::device(out, vulkanDevice->properties);
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared)
 			return;
+		if (parity.enabled) {
+			timer = parity.time;
+			paused = true;
+			debugDisplay = false;
+			modelRotation = glm::vec3(0.0f);
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(0.0f, 1.0f, -6.0f),
+				glm::vec3(-2.5f, 0.0f, 0.0f)
+			);
+			camera.setPerspective(
+				60.0f, (float)width / (float)height, 0.1f, 256.0f
+			);
+		}
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				parity.saveImage(
+					vulkanDevice, queue, offscreenPass.color.image,
+					FB_COLOR_FORMAT, offscreenPass.width, offscreenPass.height,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					VK_IMAGE_ASPECT_COLOR_BIT, 0, 0,
+					parity.path("cpp_offscreen_color.ppm"), "offscreenColor"
+				);
+				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)

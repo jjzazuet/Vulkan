@@ -8,6 +8,7 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_parity.h"
 
 
 // Offscreen frame buffer properties
@@ -18,6 +19,8 @@ class VulkanExample : public VulkanExampleBase
 {
 public:
 	bool bloom = true;
+	ztgfx::Parity parity;
+	VkFormat offscreenDepthFormat = VK_FORMAT_UNDEFINED;
 
 	vks::TextureCubeMap cubemap;
 
@@ -102,6 +105,12 @@ public:
 		camera.setPosition(glm::vec3(0.0f, 0.0f, -10.25f));
 		camera.setRotation(glm::vec3(7.5f, -343.0f, 0.0f));
 		camera.setPerspective(45.0f, (float)width / (float)height, 0.1f, 256.0f);
+
+		parity = ztgfx::Parity::fromEnvironment();
+		if (parity.enabled) {
+			settings.overlay = false;
+			bloom = true;
+		}
 	}
 
 	~VulkanExample()
@@ -237,6 +246,7 @@ public:
 		VkFormat fbDepthFormat;
 		VkBool32 validDepthFormat = vks::tools::getSupportedDepthFormat(physicalDevice, &fbDepthFormat);
 		assert(validDepthFormat);
+		offscreenDepthFormat = fbDepthFormat;
 
 		// Create a separate render pass for the offscreen rendering as it may differ from the one used for scene rendering
 
@@ -660,14 +670,207 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
+
+	void dumpSampler(
+		ztgfx::JsonWriter& out, const char* name,
+		float maxLod, bool anisotropy, float maxAnisotropy)
+	{
+		out.key(name).beginObject();
+		out.key("magFilter").value("LINEAR");
+		out.key("minFilter").value("LINEAR");
+		out.key("mipmapMode").value("LINEAR");
+		out.key("addressModeU").value("CLAMP_TO_EDGE");
+		out.key("addressModeV").value("CLAMP_TO_EDGE");
+		out.key("addressModeW").value("CLAMP_TO_EDGE");
+		out.key("minLod").value(0.0f);
+		out.key("maxLod").value(maxLod);
+		out.key("anisotropyEnable").value(anisotropy);
+		out.key("maxAnisotropy").value(maxAnisotropy);
+		out.key("borderColor").value("FLOAT_OPAQUE_WHITE");
+		out.endObject();
+	}
+
+	void dumpPipelineState(
+		ztgfx::JsonWriter& out, const char* name,
+		const char* vertexShader, const char* fragmentShader,
+		const char* cullMode, bool blend, bool depthWrite, int blurDirection)
+	{
+		out.key(name).beginObject();
+		out.key("polygonMode").value("FILL");
+		out.key("cullMode").value(cullMode);
+		out.key("frontFace").value("COUNTER_CLOCKWISE");
+		out.key("lineWidth").value(1.0f);
+		out.key("depthTest").value(true);
+		out.key("depthWrite").value(depthWrite);
+		out.key("depthCompare").value("LESS_OR_EQUAL");
+		out.key("blendEnable").value(blend);
+		out.key("srcColorBlendFactor").value("ONE");
+		out.key("dstColorBlendFactor").value(blend ? "ONE" : "ZERO");
+		out.key("srcAlphaBlendFactor").value(blend ? "SRC_ALPHA" : "ONE");
+		out.key("dstAlphaBlendFactor").value(blend ? "DST_ALPHA" : "ZERO");
+		out.key("vertexShader").value(vertexShader);
+		out.key("fragmentShader").value(fragmentShader);
+		if (blurDirection >= 0) {
+			out.key("blurDirection").value(blurDirection);
+		}
+		out.endObject();
+	}
+
+	void dumpParityMetadata(std::string filename)
+	{
+		ztgfx::JsonWriter out(filename);
+		ztgfx::Parity::header(out, parity.captureFrame, width, height);
+		ztgfx::Parity::timeValue(out, parity.time);
+
+		ztgfx::Parity::CameraLens lens{
+			glm::radians(45.0f), (float)width / (float)height, 0.1f, 256.0f
+		};
+		ztgfx::Parity::camera(out, camera, &lens);
+		out.key("light").beginObject();
+		out.key("position").beginArray();
+		out.value(-5.0f).value(-5.0f).value(0.0f);
+		out.endArray();
+		out.endObject();
+
+		out.key("uniforms").beginObject();
+		out.key("scene").beginObject();
+		out.key("projection").array(&ubos.scene.projection[0][0], 16);
+		out.key("view").array(&ubos.scene.view[0][0], 16);
+		out.key("model").array(&ubos.scene.model[0][0], 16);
+		out.endObject();
+		out.key("skyBox").beginObject();
+		out.key("projection").array(&ubos.skyBox.projection[0][0], 16);
+		out.key("view").array(&ubos.skyBox.view[0][0], 16);
+		out.key("model").array(&ubos.skyBox.model[0][0], 16);
+		out.endObject();
+		out.key("blurParams").beginObject();
+		out.key("blurScale").value(ubos.blurParams.blurScale);
+		out.key("blurStrength").value(ubos.blurParams.blurStrength);
+		out.endObject();
+		out.endObject();
+
+		out.key("formats").beginObject();
+		out.key("color").value((unsigned int)swapChain.colorFormat);
+		out.key("offscreenColor").value((unsigned int)FB_COLOR_FORMAT);
+		out.key("depth").value((unsigned int)depthFormat);
+		out.key("offscreenDepth").value((unsigned int)offscreenDepthFormat);
+		out.endObject();
+
+		out.key("clears").beginObject();
+		out.key("scene").array(defaultClearColor.float32, 4);
+		out.key("offscreen").beginArray();
+		out.value(0.0f).value(0.0f).value(0.0f).value(1.0f);
+		out.endArray();
+		out.endObject();
+
+		out.key("textures").beginObject();
+		out.key("glow").beginObject();
+		out.key("width").value(FB_DIM);
+		out.key("height").value(FB_DIM);
+		out.key("format").value((unsigned int)FB_COLOR_FORMAT);
+		out.endObject();
+		out.key("verticalBlur").beginObject();
+		out.key("width").value(FB_DIM);
+		out.key("height").value(FB_DIM);
+		out.key("format").value((unsigned int)FB_COLOR_FORMAT);
+		out.endObject();
+		out.key("cubemap").beginObject();
+		out.key("width").value((unsigned int)cubemap.width);
+		out.key("height").value((unsigned int)cubemap.height);
+		out.key("layers").value(6u);
+		out.key("format").value((unsigned int)VK_FORMAT_R8G8B8A8_UNORM);
+		out.endObject();
+		out.endObject();
+
+		out.key("samplers").beginObject();
+		dumpSampler(out, "offscreen", 1.0f, false, 1.0f);
+		dumpSampler(out, "cubemap",
+			(float)cubemap.mipLevels,
+			vulkanDevice->enabledFeatures.samplerAnisotropy != 0,
+			vulkanDevice->enabledFeatures.samplerAnisotropy
+				? vulkanDevice->properties.limits.maxSamplerAnisotropy : 1.0f);
+		out.endObject();
+
+		out.key("pipelines").beginObject();
+		dumpPipelineState(out, "glow", "bloom/colorpass.vert.spv",
+			"bloom/colorpass.frag.spv", "BACK", false, true, -1);
+		dumpPipelineState(out, "phong", "bloom/phongpass.vert.spv",
+			"bloom/phongpass.frag.spv", "BACK", false, true, -1);
+		dumpPipelineState(out, "skybox", "bloom/skybox.vert.spv",
+			"bloom/skybox.frag.spv", "FRONT", false, false, -1);
+		dumpPipelineState(out, "blurVert", "bloom/gaussblur.vert.spv",
+			"bloom/gaussblur.frag.spv", "NONE", true, true, 0);
+		dumpPipelineState(out, "blurHorz", "bloom/gaussblur.vert.spv",
+			"bloom/gaussblur.frag.spv", "NONE", true, true, 1);
+		out.endObject();
+
+		out.key("specConstants").beginObject();
+		out.key("blurdirection").beginArray();
+		out.value(0u).value(1u);
+		out.endArray();
+		out.endObject();
+
+		ztgfx::Parity::device(out, vulkanDevice->properties);
+		out.close();
+	}
+
+	void finishParity()
+	{
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(_DIRECT2DISPLAY) || defined(VK_USE_PLATFORM_HEADLESS_EXT)
+		quit = true;
+#else
+		std::exit(0);
+#endif
+	}
+
 	virtual void render()
 	{
 		if (!prepared)
 			return;
+		if (parity.enabled) {
+			timer = parity.time;
+			ztgfx::Parity::pinCamera(
+				camera, glm::vec3(0.0f, 0.0f, -10.25f),
+				glm::vec3(7.5f, -343.0f, 0.0f)
+			);
+			camera.setPerspective(
+				45.0f, (float)width / (float)height, 0.1f, 256.0f
+			);
+			bloom = true;
+		}
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+
+		if (parity.enabled) {
+			vkDeviceWaitIdle(device);
+			if (parity.frame == parity.captureFrame) {
+				parity.saveSwapchain(
+					vulkanDevice, queue, swapChain.images[currentImageIndex],
+					swapChain.colorFormat, width, height,
+					parity.path("cpp_scene.ppm"), "scene"
+				);
+				parity.saveImage(
+					vulkanDevice, queue, offscreenPass.framebuffers[0].color.image,
+					FB_COLOR_FORMAT, FB_DIM, FB_DIM,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					VK_IMAGE_ASPECT_COLOR_BIT, 0, 0,
+					parity.path("cpp_glow.ppm"), "glow"
+				);
+				parity.saveImage(
+					vulkanDevice, queue, offscreenPass.framebuffers[1].color.image,
+					FB_COLOR_FORMAT, FB_DIM, FB_DIM,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					VK_IMAGE_ASPECT_COLOR_BIT, 0, 0,
+					parity.path("cpp_blur_vertical.ppm"), "verticalBlur"
+				);
+				dumpParityMetadata(parity.path("cpp.json"));
+				parity.writeCaptures(parity.path("captures.json"));
+				finishParity();
+			}
+			parity.frame++;
+		}
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
