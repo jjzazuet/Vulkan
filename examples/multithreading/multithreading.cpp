@@ -87,6 +87,10 @@ public:
 
 	std::default_random_engine rndEngine;
 
+	// Per-frame command counters recorded by the ZTGFX_SCAL capture
+	uint32_t drawCalls{ 0 };
+	uint32_t secondaryCmdBuffers{ 0 };
+
 	VulkanExample() : VulkanExampleBase()
 	{
 		title = "Multi threaded command buffer";
@@ -106,6 +110,9 @@ public:
 		threadPool.setThreadCount(numThreads);
 		numObjectsPerThread = 512 / numThreads;
 		rndEngine.seed(benchmark.active ? 0 : (unsigned)time(nullptr));
+		if (benchmark.scal.active) {
+			benchmark.scal.demo = "multithreading";
+		}
 	}
 
 	~VulkanExample()
@@ -427,10 +434,12 @@ public:
 		threadPool.wait();
 
 		// Only submit if object is within the current view frustum
+		uint32_t visibleObjects{ 0 };
 		for (uint32_t t = 0; t < numThreads; t++) {
 			for (uint32_t i = 0; i < numObjectsPerThread; i++) {
 				if (threadData[t].objectData[i].visible) {
 					commandBuffers.push_back(threadData[t].commandBuffer[currentBuffer][i]);
+					visibleObjects++;
 				}
 			}
 		}
@@ -439,6 +448,9 @@ public:
 		if (ui.visible) {
 			commandBuffers.push_back(secondaryCommandBuffers[currentBuffer].ui);
 		}
+
+		drawCalls = visibleObjects + (displayStarSphere ? 1u : 0u);
+		secondaryCmdBuffers = static_cast<uint32_t>(commandBuffers.size());
 
 		// Execute render commands from the secondary command buffer
 		vkCmdExecuteCommands(drawCmdBuffers[currentBuffer], static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
@@ -453,6 +465,31 @@ public:
 	{
 		if (!prepared)
 			return;
+		if (benchmark.scal.active) {
+			// Pin the camera and animation time so every capture run renders
+			// the same deterministic frame sequence.
+			camera.setPosition(glm::vec3(0.0f, -0.0f, -32.5f));
+			camera.setRotation(glm::vec3(0.0f));
+			timer = 0.0f;
+			auto tWaitStart = std::chrono::high_resolution_clock::now();
+			VulkanExampleBase::prepareFrame();
+			auto tRecordStart = std::chrono::high_resolution_clock::now();
+			updateCommandBuffer();
+			updateMatrices();
+			auto tRecordEnd = std::chrono::high_resolution_clock::now();
+			VulkanExampleBase::submitFrame();
+			auto tSubmitEnd = std::chrono::high_resolution_clock::now();
+			auto elapsed = [](std::chrono::high_resolution_clock::time_point a, std::chrono::high_resolution_clock::time_point b) {
+				return std::chrono::duration<double, std::milli>(b - a).count();
+			};
+			// CPU command recording vs. time blocked on the GPU (fence wait
+			// and present / queue submit).
+			benchmark.scal.metric("gpuWaitMs", elapsed(tWaitStart, tRecordStart) + elapsed(tRecordEnd, tSubmitEnd));
+			benchmark.scal.metric("cpuFrameMs", elapsed(tRecordStart, tRecordEnd));
+			benchmark.scal.metric("drawCalls", drawCalls);
+			benchmark.scal.metric("secondaryCmdBuffers", secondaryCmdBuffers);
+			return;
+		}
 		VulkanExampleBase::prepareFrame();
 		updateCommandBuffer();
 		updateMatrices();
