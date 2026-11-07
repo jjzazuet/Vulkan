@@ -832,6 +832,14 @@ VulkanExampleBase::VulkanExampleBase()
 	if (commandLineParser.isSet("benchmarkframes")) {
 		benchmark.outputFrames = commandLineParser.getValueAsInt("benchmarkframes", benchmark.outputFrames);
 	}
+	if (benchmark.scal.active) {
+		benchmark.active = true;
+		benchmark.warmup = static_cast<uint32_t>(benchmark.scal.warmupSeconds);
+		benchmark.outputFrames = benchmark.scal.frames;
+		benchmark.scal.width = width;
+		benchmark.scal.height = height;
+		vks::tools::errorModeSilent = true;
+	}
 #if (!(defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT)))
 	if(commandLineParser.isSet("resourcepath")) {
 		vks::tools::resourcePath = commandLineParser.getValueAsString("resourcepath", "");
