@@ -94,6 +94,9 @@ public:
 		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 512.0f);
 		camera.setTranslation(glm::vec3(0.5f, 0.0f, 0.0f));
 		camera.movementSpeed = 5.0f;
+		if (benchmark.scal.active) {
+			benchmark.scal.demo = "computecullandlod";
+		}
 	}
 
 	~VulkanExample()
@@ -726,6 +729,20 @@ public:
 		if (!prepared)
 			return;
 
+		const bool scal = benchmark.scal.active;
+		if (scal) {
+			// Pin the camera and animation time so every capture run renders
+			// the same deterministic frame sequence.
+			camera.setPosition(glm::vec3(0.5f, 0.0f, 0.0f));
+			camera.setRotation(glm::vec3(0.0f));
+			timer = 0.0f;
+		}
+		auto elapsed = [](std::chrono::high_resolution_clock::time_point a, std::chrono::high_resolution_clock::time_point b) {
+			return std::chrono::duration<double, std::milli>(b - a).count();
+		};
+		auto tWaitStart = std::chrono::high_resolution_clock::now();
+		double computeDispatchMs = 0.0;
+
 		// Submit compute commands
 		{
 			VK_CHECK_RESULT(vkWaitForFences(device, 1, &compute.fences[currentBuffer], VK_TRUE, UINT64_MAX));
@@ -746,17 +763,28 @@ public:
 			submitInfo.commandBufferCount = 1;
 			submitInfo.pCommandBuffers = &compute.commandBuffers[currentBuffer];
 			VK_CHECK_RESULT(vkQueueSubmit(compute.queue, 1, &submitInfo, compute.fences[currentBuffer]));
+
+			if (scal) {
+				// Measure the compute dispatch and read this frame's statistics
+				// once the shader has finished writing them.
+				auto tDispatchStart = std::chrono::high_resolution_clock::now();
+				VK_CHECK_RESULT(vkWaitForFences(device, 1, &compute.fences[currentBuffer], VK_TRUE, UINT64_MAX));
+				computeDispatchMs = elapsed(tDispatchStart, std::chrono::high_resolution_clock::now());
+				memcpy(&indirectStats, indirectDrawCountBuffers[currentBuffer].mapped, sizeof(indirectStats));
+			}
 		}
 
 		// Submit graphics commands
 		{
 			VK_CHECK_RESULT(vkWaitForFences(device, 1, &waitFences[currentBuffer], VK_TRUE, UINT64_MAX));
 			VK_CHECK_RESULT(vkResetFences(device, 1, &waitFences[currentBuffer]));
-		
+
 			VulkanExampleBase::prepareFrame(false);
 
+			auto tRecordStart = std::chrono::high_resolution_clock::now();
 			updateUniformBuffer();
 			buildGraphicsCommandBuffer();
+			auto tRecordEnd = std::chrono::high_resolution_clock::now();
 
 			VkPipelineStageFlags waitDstStageMask[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT };
 			VkSemaphore waitSemaphores[2] = { presentCompleteSemaphores[currentBuffer], compute.semaphores[currentBuffer].complete };
@@ -774,6 +802,19 @@ public:
 			VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, waitFences[currentBuffer]));
 
 			VulkanExampleBase::submitFrame(true);
+			auto tSubmitEnd = std::chrono::high_resolution_clock::now();
+
+			if (scal) {
+				// CPU command recording vs. time blocked on the GPU (fence
+				// wait, compute dispatch and present).
+				benchmark.scal.metric("gpuWaitMs", elapsed(tWaitStart, tRecordStart) + elapsed(tRecordEnd, tSubmitEnd));
+				benchmark.scal.metric("cpuFrameMs", elapsed(tRecordStart, tRecordEnd));
+				benchmark.scal.metric("drawCallsBefore", objectCount);
+				benchmark.scal.metric("drawCallsAfter", indirectStats.drawCount);
+				benchmark.scal.metric("computeDispatchMs", computeDispatchMs);
+				benchmark.scal.metric("indirectDrawBytes", static_cast<double>(indirectStats.drawCount) * sizeof(VkDrawIndexedIndirectCommand));
+				benchmark.scal.histogram("lodHistogram", indirectStats.lodCount, MAX_LOD_LEVEL + 1);
+			}
 		}
 	}
 
