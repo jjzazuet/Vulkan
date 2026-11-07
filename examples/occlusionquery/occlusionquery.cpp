@@ -57,6 +57,13 @@ public:
 	// Passed query samples
 	uint64_t passedSamples[2] = { 1,1 };
 
+	// Occlusion-tested object draws per frame. The plane is the occluder and
+	// is not part of the culling decision.
+	static constexpr uint32_t occlusionCandidates = 2;
+
+	// Per-frame counters recorded by the ZTGFX_SCAL capture
+	uint32_t queryPoolResets{ 0 };
+
 	VulkanExample() : VulkanExampleBase()
 	{
 		title = "Occlusion queries";
@@ -65,6 +72,9 @@ public:
 		camera.setRotation(glm::vec3(0.0f, -123.75f, 0.0f));
 		camera.setRotationSpeed(0.5f);
 		camera.setPerspective(60.0f, (float)width / (float)height, 1.0f, 256.0f);
+		if (benchmark.scal.active) {
+			benchmark.scal.demo = "occlusionquery";
+		}
 	}
 
 	~VulkanExample()
@@ -251,6 +261,7 @@ public:
 
 	void buildCommandBuffer()
 	{
+		queryPoolResets = 0;
 		VkCommandBuffer cmdBuffer = drawCmdBuffers[currentBuffer];
 		
 		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
@@ -274,6 +285,7 @@ public:
 		// Reset query pool
 		// Must be done outside of render pass
 		vkCmdResetQueryPool(cmdBuffer, queryPool, 0, 2);
+		queryPoolResets++;
 
 		vkCmdBeginRenderPass(cmdBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -357,15 +369,9 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
-	virtual void render()
+	// vkGetQueryResults copies the query results into a host visible buffer that we can display
+	void readPassedSamples()
 	{
-		if (!prepared)
-			return;
-		VulkanExampleBase::prepareFrame();
-		updateUniformBuffers();
-		buildCommandBuffer();
-		VulkanExampleBase::submitFrame();
-		// vkGetQueryResults copies the query results into a host visible buffer that we can display
 		vkGetQueryPoolResults(
 			device,
 			queryPool,
@@ -378,6 +384,49 @@ public:
 			// If you don't want to wait, you can use VK_QUERY_RESULT_WITH_AVAILABILITY_BIT
 			// which also returns the state of the result (ready) in the result
 			VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+	}
+
+	virtual void render()
+	{
+		if (!prepared)
+			return;
+		if (benchmark.scal.active) {
+			// Pin the camera and animation time so every capture run renders
+			// the same deterministic frame sequence.
+			camera.setPosition(glm::vec3(0.0f, 0.0f, -7.5f));
+			camera.setRotation(glm::vec3(0.0f, 180.0f, 0.0f));
+			timer = 0.0f;
+			auto tWaitStart = std::chrono::high_resolution_clock::now();
+			VulkanExampleBase::prepareFrame();
+			auto tRecordStart = std::chrono::high_resolution_clock::now();
+			updateUniformBuffers();
+			buildCommandBuffer();
+			auto tRecordEnd = std::chrono::high_resolution_clock::now();
+			VulkanExampleBase::submitFrame();
+			readPassedSamples();
+			auto tSubmitEnd = std::chrono::high_resolution_clock::now();
+			auto elapsed = [](std::chrono::high_resolution_clock::time_point a, std::chrono::high_resolution_clock::time_point b) {
+				return std::chrono::duration<double, std::milli>(b - a).count();
+			};
+			const uint32_t visibleCandidates =
+				(passedSamples[0] > 0 ? 1u : 0u) + (passedSamples[1] > 0 ? 1u : 0u);
+			const double cullRatio =
+				1.0 - static_cast<double>(visibleCandidates) / occlusionCandidates;
+			// CPU command recording vs. time blocked on the GPU (fence wait,
+			// present / queue submit and the blocking query readback).
+			benchmark.scal.metric("gpuWaitMs", elapsed(tWaitStart, tRecordStart) + elapsed(tRecordEnd, tSubmitEnd));
+			benchmark.scal.metric("cpuFrameMs", elapsed(tRecordStart, tRecordEnd));
+			benchmark.scal.metric("drawCallsSubmitted", occlusionCandidates);
+			benchmark.scal.metric("drawCallsVisible", visibleCandidates);
+			benchmark.scal.metric("occlusionCullRatio", cullRatio);
+			benchmark.scal.metric("queryPoolResets", queryPoolResets);
+			return;
+		}
+		VulkanExampleBase::prepareFrame();
+		updateUniformBuffers();
+		buildCommandBuffer();
+		VulkanExampleBase::submitFrame();
+		readPassedSamples();
 	}
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
