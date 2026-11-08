@@ -32,6 +32,23 @@ namespace vks
 				std::vector<double> values;
 			};
 
+			// Capture-scoped values (e.g. per-mip data) that are produced
+			// once instead of once per frame. Written verbatim.
+			struct Constant {
+				std::string name;
+				double value;
+			};
+
+			struct Array {
+				std::string name;
+				std::vector<double> values;
+			};
+
+			struct TextArray {
+				std::string name;
+				std::vector<std::string> values;
+			};
+
 			bool active = false;
 			std::string dir = ".";
 			std::string demo;
@@ -43,6 +60,9 @@ namespace vks
 			bool recording = false;
 			std::vector<double> frameTimes;
 			std::vector<Series> series;
+			std::vector<Constant> constants;
+			std::vector<Array> arrays;
+			std::vector<TextArray> textArrays;
 
 			static Scal fromEnvironment() {
 				Scal scal;
@@ -79,6 +99,40 @@ namespace vks
 				series.push_back({ name, { value } });
 			}
 
+			// Records a value produced once per capture (outside the
+			// measurement window), e.g. mip-generation cost or texture size.
+			void constant(const std::string& name, double value) {
+				for (auto& entry : constants) {
+					if (entry.name == name) {
+						entry.value = value;
+						return;
+					}
+				}
+				constants.push_back({ name, value });
+			}
+
+			// Records a capture-scoped numeric array, e.g. per-mip timings.
+			void array(const std::string& name, const std::vector<double>& values) {
+				for (auto& entry : arrays) {
+					if (entry.name == name) {
+						entry.values = values;
+						return;
+					}
+				}
+				arrays.push_back({ name, values });
+			}
+
+			// Records a capture-scoped string array, e.g. per-mip hashes.
+			void strings(const std::string& name, const std::vector<std::string>& values) {
+				for (auto& entry : textArrays) {
+					if (entry.name == name) {
+						entry.values = values;
+						return;
+					}
+				}
+				textArrays.push_back({ name, values });
+			}
+
 			std::string path(const std::string& file) const {
 				return dir + file;
 			}
@@ -109,6 +163,23 @@ namespace vks
 				out.endObject();
 				for (const auto& entry : series) {
 					out.key(entry.name).value(median(entry.values));
+				}
+				for (const auto& entry : constants) {
+					out.key(entry.name).value(entry.value);
+				}
+				for (const auto& entry : arrays) {
+					out.key(entry.name).beginArray();
+					for (auto value : entry.values) {
+						out.value(value);
+					}
+					out.endArray();
+				}
+				for (const auto& entry : textArrays) {
+					out.key(entry.name).beginArray();
+					for (const auto& value : entry.values) {
+						out.value(value);
+					}
+					out.endArray();
 				}
 				out.close();
 			}
