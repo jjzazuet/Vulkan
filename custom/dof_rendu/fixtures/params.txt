@@ -1,0 +1,8 @@
+width=512
+height=512
+zNear=0.1
+zFar=100.0
+focusDist=2.0
+focusScale=10.0
+projX=-1.0010010010010009
+projY=-0.10010010010010009

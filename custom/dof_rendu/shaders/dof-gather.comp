@@ -1,0 +1,57 @@
+#version 450
+// Rendu DOF gather pass, adapted to a compute pass.
+// Source: kosua20/Rendu, resources/common/shaders/screens/dof-gather.frag (MIT).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D colorTex;
+layout(set = 0, binding = 1) uniform sampler2D cocDepthTex;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D outColor;
+
+layout(push_constant) uniform Params {
+  vec2 invSize;
+} pc;
+
+const float RADIUS = 15.0;
+const float SCALE = 0.75;
+const float GOLDEN_ANGLE = 2.39996322972865332;
+
+vec2 fetchCocDepth(ivec2 xy, ivec2 size) {
+  return texelFetch(cocDepthTex, clamp(xy, ivec2(0), size - 1), 0).rg;
+}
+
+void main() {
+  ivec2 size = imageSize(outColor);
+  ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+  if (xy.x >= size.x || xy.y >= size.y) {
+    return;
+  }
+
+  vec2 uv = (vec2(xy) + 0.5) / vec2(size);
+  vec2 centerCoc = fetchCocDepth(xy, size);
+  centerCoc.x = clamp(centerCoc.x, 0.0, RADIUS);
+
+  vec3 color = texture(colorTex, uv).rgb;
+  int sum = 1;
+  float sizeAcc = centerCoc.x;
+  float radius = SCALE;
+
+  for (float angle = 0.0; radius < RADIUS; angle += GOLDEN_ANGLE) {
+    vec2 newUV = uv + vec2(cos(angle), sin(angle)) * pc.invSize * radius;
+    ivec2 newIndex = ivec2(clamp(newUV * vec2(size), vec2(0.0), vec2(size - 1)));
+    vec2 newCoc = fetchCocDepth(newIndex, size);
+    vec3 newColor = texture(colorTex, newUV).rgb;
+
+    if (newCoc.y > centerCoc.y) {
+      newCoc.x = clamp(newCoc.x, 0.0, 2.0 * centerCoc.x);
+    }
+
+    float validity = smoothstep(radius - 0.5, radius + 0.5, newCoc.x);
+    color += mix(color / float(sum), newColor, validity);
+    sizeAcc += newCoc.x;
+    sum += 1;
+    radius += SCALE / radius;
+  }
+
+  imageStore(outColor, xy, vec4(color, sizeAcc) / float(sum));
+}
