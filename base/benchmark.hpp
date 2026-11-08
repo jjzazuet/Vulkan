@@ -32,6 +32,13 @@ namespace vks
 				std::vector<double> values;
 			};
 
+			// Per-frame histograms (e.g. LOD level counts). Reduced per bucket
+			// with the median and written as a JSON array.
+			struct Histogram {
+				std::string name;
+				std::vector<std::vector<uint32_t>> samples;
+			};
+
 			bool active = false;
 			std::string dir = ".";
 			std::string demo;
@@ -43,6 +50,7 @@ namespace vks
 			bool recording = false;
 			std::vector<double> frameTimes;
 			std::vector<Series> series;
+			std::vector<Histogram> histograms;
 
 			static Scal fromEnvironment() {
 				Scal scal;
@@ -79,6 +87,20 @@ namespace vks
 				series.push_back({ name, { value } });
 			}
 
+			// Records one sample of a named per-frame histogram. Call once per
+			// frame from the demo's render path while the measurement window is
+			// active.
+			void histogram(const std::string& name, const uint32_t* values, size_t count) {
+				if (!recording) return;
+				for (auto& entry : histograms) {
+					if (entry.name == name) {
+						entry.samples.emplace_back(values, values + count);
+						return;
+					}
+				}
+				histograms.push_back({ name, { std::vector<uint32_t>(values, values + count) } });
+			}
+
 			std::string path(const std::string& file) const {
 				return dir + file;
 			}
@@ -109,6 +131,19 @@ namespace vks
 				out.endObject();
 				for (const auto& entry : series) {
 					out.key(entry.name).value(median(entry.values));
+				}
+				for (const auto& entry : histograms) {
+					out.key(entry.name).beginArray();
+					const size_t bucketCount = entry.samples.empty() ? 0 : entry.samples.front().size();
+					for (size_t bucket = 0; bucket < bucketCount; bucket++) {
+						std::vector<double> values;
+						values.reserve(entry.samples.size());
+						for (const auto& sample : entry.samples) {
+							values.push_back(static_cast<double>(sample[bucket]));
+						}
+						out.value(static_cast<unsigned int>(std::llround(median(values))));
+					}
+					out.endArray();
 				}
 				out.close();
 			}
