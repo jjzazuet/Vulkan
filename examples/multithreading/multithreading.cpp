@@ -471,6 +471,7 @@ public:
 			camera.setPosition(glm::vec3(0.0f, -0.0f, -32.5f));
 			camera.setRotation(glm::vec3(0.0f));
 			timer = 0.0f;
+			frameTimer = 1.0f / 60.0f;
 			auto tWaitStart = std::chrono::high_resolution_clock::now();
 			VulkanExampleBase::prepareFrame();
 			auto tRecordStart = std::chrono::high_resolution_clock::now();
