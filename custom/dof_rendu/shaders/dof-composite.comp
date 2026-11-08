@@ -1,0 +1,23 @@
+#version 450
+// Rendu DOF composite pass, adapted to a compute pass.
+// Source: kosua20/Rendu, resources/common/shaders/screens/dof-composite.frag (MIT).
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D sharpTex;
+layout(set = 0, binding = 1) uniform sampler2D blurTex;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D outTex;
+
+void main() {
+  ivec2 size = imageSize(outTex);
+  ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+  if (xy.x >= size.x || xy.y >= size.y) {
+    return;
+  }
+
+  vec2 uv = (vec2(xy) + 0.5) / vec2(size);
+  vec4 blurColor = texture(blurTex, uv);
+  vec3 sharpColor = texture(sharpTex, uv).rgb;
+  float blendFactor = clamp((blurColor.a - 1.0) / 5.0, 0.0, 1.0);
+  imageStore(outTex, xy, vec4(mix(sharpColor, blurColor.rgb, blendFactor), 1.0));
+}

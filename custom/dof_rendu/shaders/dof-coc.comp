@@ -1,0 +1,39 @@
+#version 450
+// Rendu DOF CoC pass, adapted to a compute pass.
+// Source: kosua20/Rendu, resources/common/shaders/screens/dof-coc.frag (MIT).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D colorTex;
+layout(set = 0, binding = 1) uniform sampler2D depthTex;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D outColor;
+layout(set = 0, binding = 3, rgba32f) uniform writeonly image2D outCocDepth;
+
+layout(push_constant) uniform Params {
+  vec2 projParams;
+  float focusDist;
+  float focusScale;
+} pc;
+
+float linearizeDepth(float depth) {
+  return -pc.projParams.y / (depth + pc.projParams.x);
+}
+
+void main() {
+  ivec2 size = imageSize(outColor);
+  ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+  if (xy.x >= size.x || xy.y >= size.y) {
+    return;
+  }
+
+  vec2 uv = (vec2(xy) + 0.5) / vec2(size);
+  vec2 fullSize = vec2(textureSize(colorTex, 0));
+  ivec2 fullIndex = ivec2(clamp(uv * fullSize, vec2(0.0), fullSize - 1.0));
+
+  vec3 color = texelFetch(colorTex, fullIndex, 0).rgb;
+  float depth = abs(linearizeDepth(texelFetch(depthTex, fullIndex, 0).r));
+  float coc = pc.focusScale * abs(1.0 / pc.focusDist - 1.0 / depth);
+
+  imageStore(outColor, xy, vec4(color, 1.0));
+  imageStore(outCocDepth, xy, vec4(coc, depth, 0.0, 1.0));
+}
