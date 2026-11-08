@@ -1,0 +1,62 @@
+#version 450
+// Cookbook SSAO bilateral blur, adapted for the minimal Vulkan harness.
+// Source: PacktPublishing/3D-Graphics-Rendering-Cookbook-Second-Edition
+//         data/shaders/Blur.comp (MIT), commit 6777c3e.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depthTex;
+layout(set = 0, binding = 1) uniform sampler2D inTex;
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D outTex;
+
+layout(push_constant) uniform Params {
+  float depthThreshold;
+} pc;
+
+layout(constant_id = 0) const bool kIsHorizontal = true;
+
+const int kFilterSize = 17;
+const float gaussWeights[kFilterSize] = float[](
+  0.00001525878906,
+  0.0002441406250,
+  0.001831054688,
+  0.008544921875,
+  0.02777099609,
+  0.06665039063,
+  0.1221923828,
+  0.1745605469,
+  0.1963806152,
+  0.1745605469,
+  0.1221923828,
+  0.06665039063,
+  0.02777099609,
+  0.008544921875,
+  0.001831054688,
+  0.0002441406250,
+  0.00001525878906
+);
+
+void main() {
+  ivec2 size = imageSize(outTex);
+  ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+  if (xy.x >= size.x || xy.y >= size.y) {
+    return;
+  }
+
+  vec2 uv = (vec2(xy) + 0.5) / vec2(size);
+  vec3 fragColor = texture(inTex, uv).rgb;
+  float fragDepth = texture(depthTex, uv).r;
+  float texScaler = 1.0 / float(kIsHorizontal ? size.x : size.y);
+
+  vec3 c = vec3(0.0);
+  for (int i = 0; i < kFilterSize; ++i) {
+    float offset = float(i - kFilterSize / 2);
+    vec2 sampleUV = uv + texScaler * (kIsHorizontal ? vec2(offset, 0.0) : vec2(0.0, offset));
+    vec3 color = texture(inTex, sampleUV).rgb;
+    float depth = texture(depthTex, sampleUV).r;
+    float weight = clamp(abs(depth - fragDepth) * pc.depthThreshold, 0.0, 1.0);
+    c += mix(color, fragColor, weight) * gaussWeights[i];
+  }
+
+  imageStore(outTex, xy, vec4(c, 1.0));
+}

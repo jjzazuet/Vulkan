@@ -1,0 +1,10 @@
+width=512
+height=512
+zNear=0.1
+zFar=100.0
+radius=0.10
+attScale=1.0
+distScale=10.0
+blurDepthThreshold=30.0
+combineScale=1.5
+combineBias=0.16
