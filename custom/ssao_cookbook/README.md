@@ -5,7 +5,7 @@ at commit `6777c3e`, files `Chapter10/04_SSAO/src/SSAO.comp`,
 `Chapter10/04_SSAO/src/combine.frag`, and `data/shaders/Blur.comp` (MIT).
 
 This is a standalone compute-only port. It does **not** include Bistro,
-LightweightVK, ImGui, MSAA, or a window. It loads a fixed raw fixture, runs
+LightweightVK, ImGui, MSAA, or a window. It loads a fixed 512x512 rasterized Utah teapot on a ground plane, runs
 SSAO -> separable bilateral blur -> combine, reads the final RGBA8 image back,
 and writes a PPM.
 
@@ -15,10 +15,10 @@ and writes a PPM.
   `(mod(xy, 4) + 0.5) / 4` instead of `xy / 4`, which clamped to one texel.
 - The rotation plane is decoded and normalized:
   `normalize(texture(rot, uv).xyz * 2.0 - 1.0)`.
-- The synthetic fixture uses `radius=0.10`, `distScale=10.0`,
-  `attScale=1.0` (all inside the cookbook UI ranges) so the cookbook
-  occlusion curve is visible on the fixed scene. The book defaults are
-  `radius=0.03`, `distScale=1.0`, `attScale=1.5`.
+- The synthetic fixture uses `radius=1.0`, `distScale=10.0`, `attScale=1.0`
+  and combine `scale=2.0`, `bias=0.0` so the cookbook occlusion curve is
+  clearly visible on the teapot/ground contact. The book defaults are
+  `radius=0.03`, `distScale=1.0`, `attScale=1.5`, `scale=1.5`, `bias=0.16`.
 
 ## Build
 
@@ -40,6 +40,10 @@ The output is 512x512 P6 PPM. Two consecutive runs are byte-identical.
 
 ## Fixture
 
+The teapot model is `teapot.obj` from
+`alecjacobson/common-3d-test-models`; the Utah teapot is a public-domain
+model. It is rasterized by `gen_fixtures.py` onto a ground plane.
+
 `fixtures/` contains the fixed raw inputs:
 
 - `depth.r32f` — 512x512 float32 Vulkan depth
@@ -56,5 +60,5 @@ by the Java parity test, so both renderers consume byte-identical inputs.
 current fixture is:
 
 ```text
-57507188b04d793df8873ddaa64c296493e31c53e7a85fef940c1f81775b2f3a
+00697790fa028b2cd392e1085e5466d5e3a564f838f19e33f67dcb1a7e8c56c1
 ```
