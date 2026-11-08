@@ -10,12 +10,15 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include "ztgfx_sha256.h"
 #include <ktx.h>
 #include <ktxvulkan.h>
 
 class VulkanExample : public VulkanExampleBase
 {
 public:
+	static constexpr uint32_t textureBytesPerPixel = 4;
+
 	struct Texture {
 		VkImage image{ VK_NULL_HANDLE };
 		VkDeviceMemory deviceMemory{ VK_NULL_HANDLE };
@@ -24,6 +27,15 @@ public:
 		uint32_t height{ 0 };
 		uint32_t mipLevels{ 0 };
 	} texture;
+
+	// Per-mip capture data recorded by the ZTGFX_SCAL mode. Empty otherwise.
+	struct MipCapture {
+		double generationMs;
+		std::string sha256;
+	};
+	std::vector<MipCapture> mipCaptures;
+	uint64_t uploadedBytes{ 0 };
+	uint64_t textureMemoryBytes{ 0 };
 
 	// To demonstrate mip mapping and filtering this example uses separate samplers
 	std::vector<std::string> samplerNames{ "No mip maps" , "Mip maps (bilinear)" , "Mip maps (anisotropic)" };
@@ -56,6 +68,9 @@ public:
 		camera.movementSpeed = 2.5f;
 		camera.rotationSpeed = 0.5f;
 		timerSpeed *= 0.05f;
+		if (benchmark.scal.active) {
+			benchmark.scal.demo = "texturemipmapgen";
+		}
 	}
 
 	~VulkanExample()
@@ -120,6 +135,11 @@ public:
 		// Calculated as log2(max(width, height, depth))c + 1 (see specs)
 		texture.mipLevels = static_cast<uint32_t>(floor(log2(std::max(texture.width, texture.height))) + 1);
 
+		const bool scal = benchmark.scal.active;
+		if (scal) {
+			uploadedBytes = ktxTextureSize;
+		}
+
 		// Get device properties for the requested texture format
 		VkFormatProperties formatProperties;
 		vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &formatProperties);
@@ -166,6 +186,9 @@ public:
 		imageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 		VK_CHECK_RESULT(vkCreateImage(device, &imageCreateInfo, nullptr, &texture.image));
 		vkGetImageMemoryRequirements(device, texture.image, &memReqs);
+		if (scal) {
+			textureMemoryBytes = memReqs.size;
+		}
 		memAllocInfo.allocationSize = memReqs.size;
 		memAllocInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		VK_CHECK_RESULT(vkAllocateMemory(device, &memAllocInfo, nullptr, &texture.deviceMemory));
@@ -225,11 +248,36 @@ public:
 		// ---------------------------------------------------------------
 		// We copy down the whole mip chain doing a blit from mip-1 to mip
 		// An alternative way would be to always blit from the first mip level and sample that one down
+		const uint32_t generatedMipLevels = texture.mipLevels - 1;
+		VkQueryPool mipQueryPool{ VK_NULL_HANDLE };
+		if (scal)
+		{
+			// Per-level cost is measured on the GPU; CPU recording time of a
+			// blit does not reflect the work it enqueues.
+			if (vulkanDevice->queueFamilyProperties[vulkanDevice->queueFamilyIndices.graphics].timestampValidBits == 0)
+			{
+				vks::tools::exitFatal("ZTGFX_SCAL requires GPU timestamp queries", -1);
+			}
+			VkQueryPoolCreateInfo queryPoolInfo{};
+			queryPoolInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+			queryPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+			queryPoolInfo.queryCount = generatedMipLevels * 2;
+			VK_CHECK_RESULT(vkCreateQueryPool(device, &queryPoolInfo, nullptr, &mipQueryPool));
+		}
 		VkCommandBuffer blitCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+		if (scal)
+		{
+			vkCmdResetQueryPool(blitCmd, mipQueryPool, 0, generatedMipLevels * 2);
+		}
 
 		// Copy down mips from n-1 to n
 		for (uint32_t i = 1; i < texture.mipLevels; i++)
 		{
+			if (scal)
+			{
+				vkCmdWriteTimestamp(blitCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, mipQueryPool, (i - 1) * 2);
+			}
+
 			VkImageBlit imageBlit{};
 
 			// Source
@@ -288,6 +336,11 @@ public:
 				VK_PIPELINE_STAGE_TRANSFER_BIT,
 				VK_PIPELINE_STAGE_TRANSFER_BIT,
 				mipSubRange);
+
+			if (scal)
+			{
+				vkCmdWriteTimestamp(blitCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, mipQueryPool, (i - 1) * 2 + 1);
+			}
 		}
 
 		// After the loop, all mip layers are in TRANSFER_SRC layout, so transition all to SHADER_READ
@@ -304,6 +357,10 @@ public:
 			subresourceRange);
 
 		vulkanDevice->flushCommandBuffer(blitCmd, queue, true);
+		if (scal)
+		{
+			captureMipStats(mipQueryPool);
+		}
 		// ---------------------------------------------------------------
 
 		// Create some samplers with different settings that can be selected via the UI
@@ -358,6 +415,94 @@ public:
 		vkDestroyImageView(device, texture.view, nullptr);
 		vkDestroyImage(device, texture.image, nullptr);
 		vkFreeMemory(device, texture.deviceMemory, nullptr);
+	}
+
+	// Reads the per-level GPU timestamps and fingerprints each generated mip.
+	void captureMipStats(VkQueryPool queryPool)
+	{
+		const uint32_t generatedMipLevels = texture.mipLevels - 1;
+		std::vector<uint64_t> timestamps(generatedMipLevels * 2);
+		VK_CHECK_RESULT(vkGetQueryPoolResults(
+			device, queryPool, 0, static_cast<uint32_t>(timestamps.size()),
+			timestamps.size() * sizeof(uint64_t), timestamps.data(),
+			sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+		vkDestroyQueryPool(device, queryPool, nullptr);
+
+		const double timestampPeriodMs =
+			vulkanDevice->properties.limits.timestampPeriod * 1e-6;
+		for (uint32_t i = 1; i < texture.mipLevels; i++)
+		{
+			const uint32_t index = (i - 1) * 2;
+			const double generationMs =
+				static_cast<double>(timestamps[index + 1] - timestamps[index]) * timestampPeriodMs;
+			mipCaptures.push_back({ generationMs, hashMip(i) });
+		}
+
+		std::vector<double> generationMs;
+		std::vector<std::string> hashes;
+		generationMs.reserve(mipCaptures.size());
+		hashes.reserve(mipCaptures.size());
+		for (const auto& mip : mipCaptures)
+		{
+			generationMs.push_back(mip.generationMs);
+			hashes.push_back(mip.sha256);
+		}
+		benchmark.scal.array("mipGenerationMs", generationMs);
+		benchmark.scal.strings("mipSha256", hashes);
+		benchmark.scal.constant("uploadedBytes", static_cast<double>(uploadedBytes));
+		benchmark.scal.constant("textureMemoryBytes", static_cast<double>(textureMemoryBytes));
+	}
+
+	// Copies one mip level to host memory and returns its SHA-256. Index 0 of
+	// the capture arrays is mip level 1.
+	std::string hashMip(uint32_t level)
+	{
+		const uint32_t mipWidth = texture.width >> level;
+		const uint32_t mipHeight = texture.height >> level;
+		const VkDeviceSize size = static_cast<VkDeviceSize>(mipWidth) * mipHeight * textureBytesPerPixel;
+		vks::Buffer buffer{};
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			&buffer, size));
+		VK_CHECK_RESULT(buffer.map());
+
+		VkCommandBuffer cmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+		VkImageSubresourceRange range{};
+		range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		range.baseMipLevel = level;
+		range.levelCount = 1;
+		range.layerCount = 1;
+
+		vks::tools::insertImageMemoryBarrier(
+			cmd, texture.image,
+			VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			range);
+
+		VkBufferImageCopy region{};
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel = level;
+		region.imageSubresource.layerCount = 1;
+		region.imageExtent = { mipWidth, mipHeight, 1 };
+		vkCmdCopyImageToBuffer(
+			cmd, texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer.buffer, 1, &region);
+
+		vks::tools::insertImageMemoryBarrier(
+			cmd, texture.image,
+			VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			range);
+
+		vulkanDevice->flushCommandBuffer(cmd, queue, true);
+
+		auto digest = ztgfx::Sha256::hex(
+			static_cast<const uint8_t*>(buffer.mapped), static_cast<size_t>(size));
+		buffer.unmap();
+		buffer.destroy();
+		return digest;
 	}
 
 	void loadAssets()
@@ -530,6 +675,13 @@ public:
 	{
 		if (!prepared)
 			return;
+		if (benchmark.scal.active) {
+			// Pin the camera and animation time so every capture run renders
+			// the same deterministic frame sequence.
+			camera.setPosition(glm::vec3(40.75f, 0.0f, 0.0f));
+			camera.setRotation(glm::vec3(0.0f, 90.0f, 0.0f));
+			timer = 0.0f;
+		}
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();

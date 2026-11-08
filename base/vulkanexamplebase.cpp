@@ -7,6 +7,7 @@
 */
 
 #include "vulkanexamplebase.h"
+#include "ztgfx_parity.h"
 
 #if defined(VK_EXAMPLE_XCODE_GENERATED)
 #if (defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT))
@@ -323,6 +324,15 @@ void VulkanExampleBase::renderLoop()
 #endif
 		benchmark.run([=, this] { render(); }, vulkanDevice->properties);
 		vkDeviceWaitIdle(device);
+		if (benchmark.scal.active && !benchmark.scal.image.empty()) {
+			// SCAL captures reuse the parity image writer for their final frame.
+			ztgfx::Parity imageCapture;
+			imageCapture.saveSwapchain(
+				vulkanDevice, queue, swapChain.images[currentImageIndex],
+				swapChain.colorFormat, width, height,
+				benchmark.scal.image, "scal"
+			);
+		}
 		if (!benchmark.filename.empty()) {
 			benchmark.saveResults();
 		}

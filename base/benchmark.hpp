@@ -39,10 +39,28 @@ namespace vks
 				std::vector<std::vector<uint32_t>> samples;
 			};
 
+			// Capture-scoped values (e.g. per-mip data) that are produced
+			// once instead of once per frame. Written verbatim.
+			struct Constant {
+				std::string name;
+				double value;
+			};
+
+			struct Array {
+				std::string name;
+				std::vector<double> values;
+			};
+
+			struct TextArray {
+				std::string name;
+				std::vector<std::string> values;
+			};
+
 			bool active = false;
 			std::string dir = ".";
 			std::string demo;
 			std::string commit;
+			std::string image;
 			int frames = 300;
 			int warmupSeconds = 1;
 			uint32_t width = 0;
@@ -51,6 +69,9 @@ namespace vks
 			std::vector<double> frameTimes;
 			std::vector<Series> series;
 			std::vector<Histogram> histograms;
+			std::vector<Constant> constants;
+			std::vector<Array> arrays;
+			std::vector<TextArray> textArrays;
 
 			static Scal fromEnvironment() {
 				Scal scal;
@@ -69,6 +90,11 @@ namespace vks
 				scal.demo = demo != nullptr ? demo : "";
 				auto commit = std::getenv(SCAL_COMMIT_ENV);
 				scal.commit = commit != nullptr ? commit : "";
+				auto image = std::getenv(SCAL_IMAGE_ENV);
+				if (image == nullptr || *image == '\0') {
+					image = std::getenv(SCAL_GROUND_TRUTH_IMAGE_ENV);
+				}
+				scal.image = image != nullptr ? image : "";
 				scal.frames = envInt(SCAL_FRAMES_ENV, scal.frames);
 				scal.warmupSeconds = envInt(SCAL_WARMUP_ENV, scal.warmupSeconds);
 				return scal;
@@ -99,6 +125,40 @@ namespace vks
 					}
 				}
 				histograms.push_back({ name, { std::vector<uint32_t>(values, values + count) } });
+			}
+
+			// Records a value produced once per capture (outside the
+			// measurement window), e.g. mip-generation cost or texture size.
+			void constant(const std::string& name, double value) {
+				for (auto& entry : constants) {
+					if (entry.name == name) {
+						entry.value = value;
+						return;
+					}
+				}
+				constants.push_back({ name, value });
+			}
+
+			// Records a capture-scoped numeric array, e.g. per-mip timings.
+			void array(const std::string& name, const std::vector<double>& values) {
+				for (auto& entry : arrays) {
+					if (entry.name == name) {
+						entry.values = values;
+						return;
+					}
+				}
+				arrays.push_back({ name, values });
+			}
+
+			// Records a capture-scoped string array, e.g. per-mip hashes.
+			void strings(const std::string& name, const std::vector<std::string>& values) {
+				for (auto& entry : textArrays) {
+					if (entry.name == name) {
+						entry.values = values;
+						return;
+					}
+				}
+				textArrays.push_back({ name, values });
 			}
 
 			std::string path(const std::string& file) const {
@@ -145,6 +205,23 @@ namespace vks
 					}
 					out.endArray();
 				}
+				for (const auto& entry : constants) {
+					out.key(entry.name).value(entry.value);
+				}
+				for (const auto& entry : arrays) {
+					out.key(entry.name).beginArray();
+					for (auto value : entry.values) {
+						out.value(value);
+					}
+					out.endArray();
+				}
+				for (const auto& entry : textArrays) {
+					out.key(entry.name).beginArray();
+					for (const auto& value : entry.values) {
+						out.value(value);
+					}
+					out.endArray();
+				}
 				out.close();
 			}
 
@@ -153,6 +230,9 @@ namespace vks
 			static constexpr const char* SCAL_DIR_ENV = "ZTGFX_SCAL_DIR";
 			static constexpr const char* SCAL_DEMO_ENV = "ZTGFX_SCAL_DEMO";
 			static constexpr const char* SCAL_COMMIT_ENV = "ZTGFX_SCAL_COMMIT";
+			static constexpr const char* SCAL_IMAGE_ENV = "ZTGFX_PARITY_IMAGE";
+			static constexpr const char* SCAL_GROUND_TRUTH_IMAGE_ENV =
+				"ZTGFX_GROUND_TRUTH_IMAGE";
 			static constexpr const char* SCAL_FRAMES_ENV = "ZTGFX_SCAL_FRAMES";
 			static constexpr const char* SCAL_WARMUP_ENV = "ZTGFX_SCAL_WARMUP";
 
