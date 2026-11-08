@@ -60,6 +60,7 @@ namespace vks
 			std::string dir = ".";
 			std::string demo;
 			std::string commit;
+			std::string image;
 			int frames = 300;
 			int warmupSeconds = 1;
 			uint32_t width = 0;
@@ -89,6 +90,11 @@ namespace vks
 				scal.demo = demo != nullptr ? demo : "";
 				auto commit = std::getenv(SCAL_COMMIT_ENV);
 				scal.commit = commit != nullptr ? commit : "";
+				auto image = std::getenv(SCAL_IMAGE_ENV);
+				if (image == nullptr || *image == '\0') {
+					image = std::getenv(SCAL_GROUND_TRUTH_IMAGE_ENV);
+				}
+				scal.image = image != nullptr ? image : "";
 				scal.frames = envInt(SCAL_FRAMES_ENV, scal.frames);
 				scal.warmupSeconds = envInt(SCAL_WARMUP_ENV, scal.warmupSeconds);
 				return scal;
@@ -224,6 +230,9 @@ namespace vks
 			static constexpr const char* SCAL_DIR_ENV = "ZTGFX_SCAL_DIR";
 			static constexpr const char* SCAL_DEMO_ENV = "ZTGFX_SCAL_DEMO";
 			static constexpr const char* SCAL_COMMIT_ENV = "ZTGFX_SCAL_COMMIT";
+			static constexpr const char* SCAL_IMAGE_ENV = "ZTGFX_PARITY_IMAGE";
+			static constexpr const char* SCAL_GROUND_TRUTH_IMAGE_ENV =
+				"ZTGFX_GROUND_TRUTH_IMAGE";
 			static constexpr const char* SCAL_FRAMES_ENV = "ZTGFX_SCAL_FRAMES";
 			static constexpr const char* SCAL_WARMUP_ENV = "ZTGFX_SCAL_WARMUP";
 
