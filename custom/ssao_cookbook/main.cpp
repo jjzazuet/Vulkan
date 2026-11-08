@@ -578,7 +578,7 @@ int main(int argc, char** argv) {
     const uint32_t groupsY = (kHeight + 15) / 16;
 
     struct SsaoPush { float zNear, zFar, radius, attScale, distScale; };
-    const SsaoPush ssaoPush{0.1f, 100.0f, 0.10f, 1.0f, 10.0f};
+    const SsaoPush ssaoPush{0.1f, 100.0f, 1.0f, 1.0f, 10.0f};
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, ssaoPipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, ssaoPipelineLayout, 0, 1, &ssaoSet, 0, nullptr);
     vkCmdPushConstants(commandBuffer, ssaoPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SsaoPush), &ssaoPush);
@@ -608,7 +608,7 @@ int main(int argc, char** argv) {
                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     struct CombinePush { float scale, bias; };
-    const CombinePush combinePush{1.5f, 0.16f};
+    const CombinePush combinePush{2.0f, 0.0f};
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, combinePipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, combinePipelineLayout, 0, 1, &combineSet, 0, nullptr);
     vkCmdPushConstants(commandBuffer, combinePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CombinePush), &combinePush);
