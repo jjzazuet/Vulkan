@@ -1,0 +1,63 @@
+#version 450
+// Cookbook SSAO, adapted for the minimal Vulkan harness.
+// Source: PacktPublishing/3D-Graphics-Rendering-Cookbook-Second-Edition
+//         Chapter10/04_SSAO/src/SSAO.comp (MIT), commit 6777c3e.
+// Fixes vs. the book: tile the 4x4 rotation texture and decode the plane
+// to a normalized [-1,1] vector before reflect().
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depthTex;
+layout(set = 0, binding = 1) uniform sampler2D rotTex;
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D outTex;
+
+layout(push_constant) uniform Params {
+  float zNear;
+  float zFar;
+  float radius;
+  float attScale;
+  float distScale;
+} pc;
+
+const vec3 offsets[8] = vec3[](
+  vec3(-0.5, -0.5, -0.5),
+  vec3( 0.5, -0.5, -0.5),
+  vec3(-0.5,  0.5, -0.5),
+  vec3( 0.5,  0.5, -0.5),
+  vec3(-0.5, -0.5,  0.5),
+  vec3( 0.5, -0.5,  0.5),
+  vec3(-0.5,  0.5,  0.5),
+  vec3( 0.5,  0.5,  0.5)
+);
+
+float scaleZ(float d) {
+  return (pc.zFar * pc.zNear) / (d * (pc.zFar - pc.zNear) - pc.zFar);
+}
+
+void main() {
+  ivec2 size = imageSize(outTex);
+  ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+  if (xy.x >= size.x || xy.y >= size.y) {
+    return;
+  }
+
+  vec2 uv = (vec2(xy) + 0.5) / vec2(size);
+  float Z = scaleZ(texture(depthTex, uv).r);
+
+  // Tile the 4x4 rotation texture instead of clamping every pixel to one texel.
+  ivec2 rotIndex = ivec2(xy.x & 3, xy.y & 3);
+  vec2 rotUV = (vec2(rotIndex) + 0.5) / 4.0;
+  vec3 plane = normalize(texture(rotTex, rotUV).xyz * 2.0 - 1.0);
+
+  float att = 0.0;
+  for (int i = 0; i < 8; ++i) {
+    vec3 rSample = reflect(offsets[i], plane);
+    float zSample = scaleZ(texture(depthTex, uv + pc.radius * rSample.xy / Z).r);
+    float dist = max(zSample - Z, 0.0) / pc.distScale;
+    float occl = 15.0 * max(dist * (2.0 - dist), 0.0);
+    att += 1.0 / (1.0 + occl * occl);
+  }
+
+  att = clamp(att * att / 64.0 + 0.45, 0.0, 1.0) * pc.attScale;
+  imageStore(outTex, xy, vec4(vec3(att), 1.0));
+}
